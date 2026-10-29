@@ -37,6 +37,8 @@ function serveStatic(req, res) {
   }
   res.writeHead(200, {
     ...SECURITY_HEADERS,
+    // Once on HTTPS, tell browsers never to fall back to plain HTTP.
+    ...(req.socket.encrypted ? { 'Strict-Transport-Security': 'max-age=31536000' } : {}),
     'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
     'Cache-Control': 'no-cache',
   });

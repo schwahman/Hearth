@@ -28,12 +28,6 @@ CREATE TABLE IF NOT EXISTS users (
   created_at    INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS sessions (
-  token      TEXT PRIMARY KEY,
-  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  created_at INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS servers (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
@@ -120,6 +114,36 @@ CREATE TABLE IF NOT EXISTS invites (
   created_at INTEGER NOT NULL
 );
 `);
+
+// Sessions store only a SHA-256 hash of each login token.
+db.exec(`
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  last_seen  INTEGER NOT NULL,
+  user_agent TEXT,
+  ip         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+`);
+
+// Migrate v0.1 sessions (raw tokens) to hashed ones, then drop the old table.
+{
+  const crypto = require('node:crypto');
+  const old = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get();
+  if (old) {
+    db.exec('BEGIN');
+    try {
+      const ins = db.prepare('INSERT OR IGNORE INTO auth_sessions (token_hash, user_id, created_at, last_seen) VALUES (?, ?, ?, ?)');
+      for (const s of db.prepare('SELECT token, user_id, created_at FROM sessions').all()) {
+        ins.run(crypto.createHash('sha256').update(s.token).digest('hex'), s.user_id, s.created_at, Date.now());
+      }
+      db.exec('DROP TABLE sessions');
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+  }
+}
 
 // Small helpers so callers don't deal with prepared statements directly.
 const cache = new Map();

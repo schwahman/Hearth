@@ -26,4 +26,7 @@ module.exports = {
   iceServers: process.env.ICE_SERVERS ? JSON.parse(process.env.ICE_SERVERS) : [],
   // Set to "false" to stop new people signing up (invite-only community).
   openRegistration: process.env.OPEN_REGISTRATION !== 'false',
+  // Set to "true" only when Hearth sits behind a reverse proxy you control,
+  // so rate limits use the real visitor address from X-Forwarded-For.
+  trustProxy: process.env.TRUST_PROXY === 'true',
 };

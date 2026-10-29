@@ -1,5 +1,5 @@
 // Hearth web client.
-import { api, upload, getToken, setToken } from './api.js';
+import { api, upload } from './api.js';
 import { Gateway } from './gateway.js';
 import { Voice } from './voice.js';
 import {
@@ -42,7 +42,7 @@ const S = {
   stageWasFull: false,
 };
 
-const gw = new Gateway(getToken);
+const gw = new Gateway();
 const voice = new Voice(gw);
 
 // ---------------------------------------------------------------- helpers
@@ -127,6 +127,8 @@ function setAuthMode(reg) {
   $('auth-toggle').textContent = reg ? 'Have an account? Log in' : 'Need an account? Register';
   $('auth-display-wrap').classList.toggle('hidden', !reg);
   $('auth-password').autocomplete = reg ? 'new-password' : 'current-password';
+  $('auth-password').minLength = reg ? 12 : 1;
+  $('auth-password-hint').classList.toggle('hidden', !reg);
   $('auth-error').textContent = '';
 }
 
@@ -138,7 +140,8 @@ $('auth-form').onsubmit = async (e) => {
     const body = { username: $('auth-username').value.trim(), password: $('auth-password').value };
     if (registering) body.displayName = $('auth-display').value.trim() || undefined;
     const res = await api('POST', registering ? '/auth/register' : '/auth/login', body);
-    setToken(res.token);
+    S.me = res.user;
+    $('auth-password').value = '';
     start();
   } catch (err) {
     $('auth-error').textContent = err.message;
@@ -155,12 +158,10 @@ async function boot() {
   const code = inviteCodeFromUrl();
   let invite = null;
   if (code) invite = await api('GET', `/invites/${code}`).catch(() => null);
-  if (!getToken()) return showAuth(invite);
   try {
     S.me = await api('GET', '/users/@me');
     start();
   } catch {
-    setToken('');
     showAuth(invite);
   }
 }
@@ -171,7 +172,7 @@ function start() {
   gw.connect();
 }
 
-gw.on('INVALID_SESSION', () => { setToken(''); location.href = '/'; });
+gw.on('INVALID_SESSION', () => { voice.forceLeave(); location.href = '/'; });
 gw.on('DISCONNECTED', () => { if (voice.active) voice.forceLeave(); });
 
 gw.on('READY', async (d) => {
@@ -904,7 +905,6 @@ $('logout-btn').onclick = async () => {
   if (!(await confirmDialog('Log out', 'You will need your password to log back in.', 'Log out'))) return;
   voice.leave();
   await api('POST', '/auth/logout').catch(() => {});
-  setToken('');
   gw.close();
   location.href = '/';
 };
@@ -1177,6 +1177,9 @@ function profileModal() {
     el('div', { style: { display: 'flex', gap: '14px', alignItems: 'center' } }, avatar(S.me, { size: 64 }),
       el('div', {}, el('strong', {}, '@' + S.me.username))),
     lbl, el('label', {}, 'Avatar image', pic), err,
+    el('div', { class: 'row', style: { justifyContent: 'flex-start' } },
+      el('button', { class: 'btn', onclick: () => { dlg.close(); passwordModal(); } }, 'Change password'),
+      el('button', { class: 'btn', onclick: () => { dlg.close(); sessionsModal(); } }, 'Signed-in devices')),
     el('div', { class: 'row' },
       el('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'),
       el('button', { class: 'btn primary', onclick: async () => {
@@ -1189,6 +1192,70 @@ function profileModal() {
         } catch (e) { err.textContent = e.message; }
       } }, 'Save')),
   ]);
+}
+
+function passwordModal() {
+  const cur = el('input', { type: 'password', autocomplete: 'current-password', maxlength: 256 });
+  const next = el('input', { type: 'password', autocomplete: 'new-password', minlength: 12, maxlength: 256 });
+  const again = el('input', { type: 'password', autocomplete: 'new-password', maxlength: 256 });
+  const err = el('p', { class: 'error' });
+  const save = async () => {
+    err.textContent = '';
+    if (next.value !== again.value) { err.textContent = 'The new passwords do not match.'; return; }
+    try {
+      await api('POST', '/users/@me/password', { currentPassword: cur.value, newPassword: next.value });
+      dlg.close();
+      toast('Password changed. Your other devices have been signed out.');
+    } catch (e) { err.textContent = e.message; }
+  };
+  const dlg = modal([
+    el('h2', {}, 'Change password'),
+    el('label', {}, 'Current password', cur),
+    el('label', {}, 'New password', next),
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'At least 12 characters. A few random words work well.'),
+    el('label', {}, 'New password again', again), err,
+    el('div', { class: 'row' },
+      el('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'),
+      el('button', { class: 'btn primary', onclick: save }, 'Change password')),
+  ]);
+}
+
+function describeDevice(ua) {
+  if (!ua) return 'Unknown device';
+  const os = /iPhone|iPad/.test(ua) ? 'iPhone/iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows'
+    : /Mac OS/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Device';
+  const br = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox'
+    : /Safari\//.test(ua) ? 'Safari' : 'app';
+  return `${br} on ${os}`;
+}
+
+async function sessionsModal() {
+  const list = el('div');
+  const dlg = modal([
+    el('h2', {}, 'Signed-in devices'),
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'Sign out any device you don\u2019t recognize, then change your password.'),
+    list,
+    el('div', { class: 'row' },
+      el('button', { class: 'btn danger', style: { marginRight: 'auto' }, onclick: async () => {
+        if (!(await confirmDialog('Sign out everywhere', 'This signs out every device, including this one.', 'Sign out all'))) return;
+        await api('POST', '/auth/logout-all').catch(() => {});
+        location.href = '/';
+      } }, 'Sign out everywhere'),
+      el('button', { class: 'btn', onclick: () => dlg.close() }, 'Close')),
+  ]);
+  const draw = async () => {
+    try {
+      const sessions = await api('GET', '/users/@me/sessions');
+      list.replaceChildren(...sessions.map((x) => el('div', { class: 'list-row' },
+        el('div', {}, el('strong', {}, describeDevice(x.userAgent), x.current ? ' (this device)' : ''),
+          el('div', { class: 'muted small' }, `Last active ${fmtTime(x.lastSeen)}${x.ip ? ' \u00b7 ' + x.ip : ''}`)),
+        el('span', { class: 'spacer' }),
+        x.current ? null : el('button', { class: 'btn', onclick: async () => {
+          try { await api('DELETE', `/users/@me/sessions/${x.id}`); draw(); } catch (e) { toast(e.message); }
+        } }, 'Sign out'))));
+    } catch (e) { list.replaceChildren(el('p', { class: 'error' }, e.message)); }
+  };
+  draw();
 }
 
 boot();

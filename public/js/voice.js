@@ -4,11 +4,15 @@
 // The server only relays the setup messages (offer, answer, ICE candidates);
 // the audio and video themselves go straight between browsers.
 //
-// Every peer connection carries three slots that never change:
-//   0 = microphone, 1 = camera, 2 = screen share
+// Every peer connection carries four slots that never change:
+//   0 = microphone, 1 = camera, 2 = screen share, 3 = screen/game audio
 // Turning the camera or screen on/off just swaps the track in that slot,
 // so no renegotiation is needed.
-const SLOT = { AUDIO: 0, CAM: 1, SCREEN: 2 };
+const SLOT = { AUDIO: 0, CAM: 1, SCREEN: 2, SCREEN_AUDIO: 3 };
+
+// Bitrate caps per slot. Screen share is tuned for 1080p games.
+const MAX_BITRATE = { [SLOT.CAM]: 1_500_000, [SLOT.SCREEN]: 8_000_000 };
+const MAX_FPS = { [SLOT.CAM]: 30, [SLOT.SCREEN]: 60 };
 
 export class Voice extends EventTarget {
   constructor(gateway) {
@@ -82,7 +86,10 @@ export class Voice extends EventTarget {
 
   setDeafened(deaf) {
     this.deafened = deaf;
-    for (const p of this.peers.values()) if (p.audioEl) p.audioEl.muted = deaf;
+    for (const p of this.peers.values()) {
+      if (p.audioEl) p.audioEl.muted = deaf;
+      if (p.screenAudioEl) p.screenAudioEl.muted = deaf;
+    }
     if (this.mic) this.mic.getAudioTracks().forEach((t) => { t.enabled = !this.muted && !deaf; });
     this._sendState();
   }
@@ -106,11 +113,18 @@ export class Voice extends EventTarget {
       return;
     }
     if (!navigator.mediaDevices.getDisplayMedia) throw new Error('Screen sharing is not supported on this device.');
-    this.screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: false });
+    // Up to 1080p at 60 fps, plus game/system audio where the browser
+    // supports it (Chrome and Edge on Windows; tab audio elsewhere).
+    this.screen = await navigator.mediaDevices.getDisplayMedia({
+      video: { width: { ideal: 1920, max: 1920 }, height: { ideal: 1080, max: 1080 }, frameRate: { ideal: 60, max: 60 } },
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      systemAudio: 'include',
+    });
     const track = this.screen.getVideoTracks()[0];
-    track.contentHint = 'detail';
+    track.contentHint = 'motion'; // favor smooth motion for games
     track.onended = () => this._stopScreen();
     this._setSlotTrack(SLOT.SCREEN, track);
+    this._setSlotTrack(SLOT.SCREEN_AUDIO, this.screen.getAudioTracks()[0] || null);
     this._sendState();
   }
 
@@ -119,6 +133,7 @@ export class Voice extends EventTarget {
     this.screen.getTracks().forEach((t) => t.stop());
     this.screen = null;
     this._setSlotTrack(SLOT.SCREEN, null);
+    this._setSlotTrack(SLOT.SCREEN_AUDIO, null);
     this._sendState();
   }
 
@@ -131,7 +146,7 @@ export class Voice extends EventTarget {
   _setSlotTrack(slot, track) {
     for (const p of this.peers.values()) {
       const t = p.pc.getTransceivers()[slot];
-      if (t) t.sender.replaceTrack(track).catch(() => {});
+      if (t) t.sender.replaceTrack(track).then(() => this._tune(t.sender, slot)).catch(() => {});
     }
     this._changed();
   }
@@ -139,8 +154,22 @@ export class Voice extends EventTarget {
   _localTrack(slot) {
     if (slot === SLOT.AUDIO) return this.mic ? this.mic.getAudioTracks()[0] : null;
     if (slot === SLOT.CAM) return this.cam ? this.cam.getVideoTracks()[0] : null;
-    if (slot === SLOT.SCREEN) return this.screen ? this.screen.getVideoTracks()[0] : null;
+    if (slot === SLOT.SCREEN) return this.screen ? this.screen.getVideoTracks()[0] || null : null;
+    if (slot === SLOT.SCREEN_AUDIO) return this.screen ? this.screen.getAudioTracks()[0] || null : null;
     return null;
+  }
+
+  // Apply bitrate/frame-rate caps to a video sender.
+  async _tune(sender, slot) {
+    if (!MAX_BITRATE[slot]) return;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) return;
+      params.encodings[0].maxBitrate = MAX_BITRATE[slot];
+      params.encodings[0].maxFramerate = MAX_FPS[slot];
+      if (slot === SLOT.SCREEN) params.degradationPreference = 'maintain-resolution';
+      await sender.setParameters(params);
+    } catch { /* not supported in this browser; defaults are fine */ }
   }
 
   // The app calls this whenever the list of people in our channel changes.
@@ -160,8 +189,9 @@ export class Voice extends EventTarget {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
     const peer = {
       pc, userId, initiator, pendingIce: [],
-      streams: [new MediaStream(), new MediaStream(), new MediaStream()],
+      streams: [new MediaStream(), new MediaStream(), new MediaStream(), new MediaStream()],
       audioEl: null,
+      screenAudioEl: null,
     };
     this.peers.set(sessionId, peer);
 
@@ -184,6 +214,16 @@ export class Voice extends EventTarget {
         peer.audioEl.play().catch(() => {});
         this._meter(sessionId, stream, userId);
       }
+      if (slot === SLOT.SCREEN_AUDIO) {
+        if (!peer.screenAudioEl) {
+          peer.screenAudioEl = document.createElement('audio');
+          peer.screenAudioEl.autoplay = true;
+          document.getElementById('audio-sinks').appendChild(peer.screenAudioEl);
+        }
+        peer.screenAudioEl.srcObject = stream;
+        peer.screenAudioEl.muted = this.deafened;
+        peer.screenAudioEl.play().catch(() => {});
+      }
       e.track.onunmute = () => this._changed();
       this._changed();
     };
@@ -196,14 +236,16 @@ export class Voice extends EventTarget {
       pc.addTransceiver(this._localTrack(SLOT.AUDIO) || 'audio', { direction: 'sendrecv' });
       pc.addTransceiver('video', { direction: 'sendrecv' });
       pc.addTransceiver('video', { direction: 'sendrecv' });
+      pc.addTransceiver('audio', { direction: 'sendrecv' });
       const tx = pc.getTransceivers();
-      for (const slot of [SLOT.CAM, SLOT.SCREEN]) {
+      for (const slot of [SLOT.CAM, SLOT.SCREEN, SLOT.SCREEN_AUDIO]) {
         const track = this._localTrack(slot);
         if (track) tx[slot].sender.replaceTrack(track);
       }
       pc.onnegotiationneeded = async () => {
         try {
           await pc.setLocalDescription(await pc.createOffer());
+          pc.getTransceivers().forEach((t, slot) => this._tune(t.sender, slot));
           this._signal(sessionId, { type: 'offer', sdp: pc.localDescription.sdp });
         } catch (err) { console.warn('offer failed', err); }
       };
@@ -223,6 +265,7 @@ export class Voice extends EventTarget {
           t.sender.replaceTrack(this._localTrack(slot)).catch(() => {});
         });
         await pc.setLocalDescription(await pc.createAnswer());
+        pc.getTransceivers().forEach((t, slot) => this._tune(t.sender, slot));
         this._signal(fromSession, { type: 'answer', sdp: pc.localDescription.sdp });
         await this._flushIce(peer);
       } else if (data.type === 'answer') {
@@ -251,6 +294,7 @@ export class Voice extends EventTarget {
     if (!p) return;
     p.pc.close();
     if (p.audioEl) p.audioEl.remove();
+    if (p.screenAudioEl) p.screenAudioEl.remove();
     this.meters.delete(sessionId);
     this.peers.delete(sessionId);
     this._changed();

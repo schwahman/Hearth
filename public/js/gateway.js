@@ -1,9 +1,8 @@
 // Keeps the WebSocket connection to the server alive and reconnects with
 // backoff if it drops.
 export class Gateway extends EventTarget {
-  constructor(getToken) {
+  constructor() {
     super();
-    this.getToken = getToken;
     this.ws = null;
     this.retry = 0;
     this.stopped = false;
@@ -16,7 +15,8 @@ export class Gateway extends EventTarget {
     const ws = new WebSocket(`${proto}://${location.host}/gateway`);
     this.ws = ws;
     ws.onopen = () => {
-      ws.send(JSON.stringify({ op: 'IDENTIFY', token: this.getToken() }));
+      // The login cookie is sent with the connection, so no token is needed here.
+      ws.send(JSON.stringify({ op: 'IDENTIFY' }));
       clearInterval(this.heartbeat);
       this.heartbeat = setInterval(() => this.send({ op: 'HEARTBEAT' }), 30000);
     };

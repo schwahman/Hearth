@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Hearth</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#1a1816">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Hearth">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -16,7 +23,8 @@
       <p id="auth-invite" class="muted hidden"></p>
       <label>Username<input id="auth-username" autocomplete="username" required></label>
       <label id="auth-display-wrap" class="hidden">Display name<input id="auth-display" autocomplete="nickname"></label>
-      <label>Password<input id="auth-password" type="password" autocomplete="current-password" required minlength="8"></label>
+      <label>Password<input id="auth-password" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <p id="auth-password-hint" class="muted small hidden">At least 12 characters. A few random words make a strong, easy-to-remember password.</p>
       <p id="auth-error" class="error"></p>
       <button type="submit" class="btn primary" id="auth-submit">Log in</button>
       <p class="muted small"><a href="#" id="auth-toggle">Need an account? Register</a></p>

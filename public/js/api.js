@@ -1,20 +1,13 @@
 // Thin wrapper around the REST API.
-let token = localStorage.getItem('hearth_token') || '';
-
-export function getToken() { return token; }
-export function setToken(t) {
-  token = t || '';
-  if (token) localStorage.setItem('hearth_token', token);
-  else localStorage.removeItem('hearth_token');
-}
+//
+// Login is carried by an HttpOnly cookie that this page's JavaScript can't
+// read, so even a malicious script injected into the page couldn't steal it.
+try { localStorage.removeItem('hearth_token'); } catch { /* v0.1 stored it here; clear it */ }
 
 export async function api(method, path, body) {
   const res = await fetch('/api' + path, {
     method,
-    headers: {
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      ...(token ? { Authorization: 'Bearer ' + token } : {}),
-    },
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: 'same-origin',
   });
@@ -33,7 +26,7 @@ export function upload(path, file, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api' + path);
-    xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+    xhr.withCredentials = true;
     xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.upload.onprogress = (e) => onProgress && e.lengthComputable && onProgress(e.loaded / e.total);

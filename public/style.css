@@ -219,3 +219,12 @@ label input, label select, label textarea { margin-top: 6px; text-transform: non
   .msg .actions { display: flex; opacity: .0; }
   .msg:active .actions, .msg:focus-within .actions { opacity: 1; }
 }
+
+/* ---------- installed-app / notched phones ---------- */
+.composer { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+.me-bar { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+@media (max-width: 860px) {
+  .composer textarea { font-size: 16px; } /* stops iPhone zooming in on tap */
+  .msg .actions button { padding: 8px 10px; }
+  .ctl { padding: 10px 0; }
+}

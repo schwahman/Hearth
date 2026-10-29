@@ -17,7 +17,7 @@ cd hearth
 npm start
 ```
 
-Open http://localhost:8080, register, and create a server. The first person to register is just a normal user; whoever creates a server owns it.
+Open http://localhost:8080, register, and create a server. On a phone, use **Add to Home Screen** to install it like an app. The first person to register is just a normal user; whoever creates a server owns it.
 
 Run the test suite (starts a throwaway server and drives two fake users through everything):
 
@@ -92,6 +92,10 @@ All optional, set as environment variables.
 | `NODE_ID` | `0` | Unique number per node when running several (0–1023) |
 | `BUS_HUB` | | `host:port` of the event hub when running several nodes |
 
+| `TRUST_PROXY` | `false` | Set `true` only behind your own reverse proxy, so rate limits see real visitor addresses |
+
+Security details are in [SECURITY.md](SECURITY.md).
+
 **Back up** the `DATA_DIR` folder. That's everything: accounts, servers, messages and files.
 
 ---
@@ -100,6 +104,7 @@ All optional, set as environment variables.
 
 - **On your LAN / VPN:** works out of the box. Calls are peer-to-peer, so audio and video go directly between people's computers and never touch the server.
 - **Over the internet:** people behind home routers usually need a STUN server to find each other, and some need a TURN relay. Set `ICE_SERVERS`, e.g. `[{"urls":"stun:your-stun-host:3478"}]`. Building our own STUN/TURN server is on the roadmap.
+- **Screen sharing:** up to 1080p at 60 fps with game/system audio (system audio works in Chrome and Edge on Windows). Each viewer receives up to about 8 Mbps.
 - **Call size:** each person sends their stream to every other person ("mesh"). That's great up to about **6–8 people with cameras**, or more with audio only. Bigger calls need a relay server (an SFU), which is the next big piece to build (see roadmap).
 
 ---

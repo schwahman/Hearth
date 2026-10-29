@@ -34,7 +34,12 @@ async function handle(req, res) {
     const params = {};
     r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
     try {
-      const token = tokenFrom(req);
+      const { token, viaCookie } = tokenFrom(req);
+      // Changes made with the login cookie must come from our own pages,
+      // which blocks cross-site request forgery. Requests from other sites
+      // are always refused; bearer-token API clients can't be forged by a
+      // website, so they're exempt.
+      if (req.method !== 'GET' && !(token && !viaCookie)) checkOrigin(req, !(viaCookie && !r.isPublic));
       const user = auth.userFromToken(token);
       if (!r.isPublic && !user) throw new HttpError(401, 'Not logged in.');
       const body = r.raw || req.method === 'GET' || req.method === 'DELETE' ? null : await readJson(req);
@@ -42,6 +47,7 @@ async function handle(req, res) {
       if (!res.headersSent) sendJson(res, result === undefined ? 204 : 200, result);
     } catch (err) {
       if (!(err instanceof HttpError)) console.error(err);
+      if (err.headers && !res.headersSent) for (const [k, v] of Object.entries(err.headers)) res.setHeader(k, v);
       if (!res.headersSent) sendJson(res, err.status || 500, { error: err.status ? err.message : 'Server error.' });
     }
     return true;
@@ -51,8 +57,31 @@ async function handle(req, res) {
 
 function tokenFrom(req) {
   const h = req.headers.authorization || '';
-  if (h.startsWith('Bearer ')) return h.slice(7);
-  return cookie(req, 'hearth_token');
+  if (h.startsWith('Bearer ')) return { token: h.slice(7), viaCookie: false };
+  const c = cookie(req, 'hearth_token');
+  return { token: c, viaCookie: !!c };
+}
+
+// The Origin header names the site that made the request. Browsers always
+// send it on cross-site requests and on same-site POST/PUT/PATCH/DELETE.
+function sameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return null;
+  try { return new URL(origin).host === req.headers.host; } catch { return false; }
+}
+function checkOrigin(req, allowMissing) {
+  const same = sameOrigin(req);
+  if (same === false || (same === null && !allowMissing)) {
+    throw new HttpError(403, 'Request blocked: it did not come from this site.');
+  }
+}
+
+function clientIp(req) {
+  if (config.trustProxy) {
+    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (fwd) return fwd;
+  }
+  return req.socket.remoteAddress || 'unknown';
 }
 
 function cookie(req, name) {
@@ -92,7 +121,7 @@ function sendJson(res, status, obj) {
 function setSessionCookie(req, res, token) {
   const secure = req.socket.encrypted ? '; Secure' : '';
   const value = token ? encodeURIComponent(token) : '';
-  const maxAge = token ? 60 * 60 * 24 * 365 : 0;
+  const maxAge = token ? 60 * 60 * 24 * 365 : 0; // the server enforces the real expiry
   res.setHeader('Set-Cookie', `hearth_token=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`);
 }
 
@@ -138,24 +167,55 @@ function topicFor(channel) {
 route('GET', '/api/config', () => ({ iceServers: config.iceServers, openRegistration: config.openRegistration }),
   { public: true });
 
-route('POST', '/api/auth/register', ({ req, res, body }) => {
+function meta(req) {
+  return { ip: clientIp(req), userAgent: String(req.headers['user-agent'] || '') };
+}
+
+// The login token goes only into an HttpOnly cookie that page scripts can't
+// read. API clients that need it (bots, tests) can ask with returnToken.
+function loginResponse(req, res, body, id, token) {
+  setSessionCookie(req, res, token);
+  const out = { user: ser.user(one('SELECT * FROM users WHERE id = ?', id)) };
+  if (body.returnToken === true) out.token = token;
+  return out;
+}
+
+route('POST', '/api/auth/register', async ({ req, res, body }) => {
   if (!config.openRegistration && one('SELECT 1 FROM users LIMIT 1')) {
     throw new HttpError(403, 'Registration is closed on this server.');
   }
-  const { id, token } = auth.register(body.username, body.password, body.displayName);
-  setSessionCookie(req, res, token);
-  return { token, user: ser.user(one('SELECT * FROM users WHERE id = ?', id)) };
+  const { id, token } = await auth.register(body.username, body.password, body.displayName, meta(req));
+  return loginResponse(req, res, body, id, token);
 }, { public: true });
 
-route('POST', '/api/auth/login', ({ req, res, body }) => {
-  const { id, token } = auth.login(body.username, body.password);
-  setSessionCookie(req, res, token);
-  return { token, user: ser.user(one('SELECT * FROM users WHERE id = ?', id)) };
+route('POST', '/api/auth/login', async ({ req, res, body }) => {
+  const { id, token } = await auth.login(body.username, body.password, meta(req));
+  return loginResponse(req, res, body, id, token);
 }, { public: true });
 
 route('POST', '/api/auth/logout', ({ req, res, token }) => {
-  auth.logout(token);
+  auth.revokeSession(token);
   setSessionCookie(req, res, null);
+});
+
+// Signs out every device, including this one.
+route('POST', '/api/auth/logout-all', ({ req, res, user }) => {
+  auth.revokeAllSessions(user.id);
+  setSessionCookie(req, res, null);
+  bus.publish(`user:${user.id}`, { t: 'SESSIONS_REVOKED', d: {} });
+});
+
+route('POST', '/api/users/@me/password', async ({ user, body, token }) => {
+  await auth.changePassword(user.id, body.currentPassword, body.newPassword, token);
+  bus.publish(`user:${user.id}`, { t: 'SESSIONS_REVOKED', d: {} });
+  return { ok: true };
+});
+
+route('GET', '/api/users/@me/sessions', ({ user, token }) => auth.listSessions(user.id, token));
+
+route('DELETE', '/api/users/@me/sessions/:id', ({ user, params }) => {
+  auth.revokeSessionById(user.id, params.id);
+  bus.publish(`user:${user.id}`, { t: 'SESSIONS_REVOKED', d: {} });
 });
 
 route('GET', '/api/users/@me', ({ user }) => ser.user(user));
@@ -509,7 +569,7 @@ function serveUpload(req, res) {
   const url = new URL(req.url, 'http://x');
   const m = /^\/uploads\/(\d+|avatars)\/([A-Za-z0-9_-]{16,})\/([^/]+)$/.exec(url.pathname);
   if (!m) return false;
-  const user = auth.userFromToken(tokenFrom(req));
+  const user = auth.userFromToken(tokenFrom(req).token);
   try {
     if (!user) throw new HttpError(401, 'Not logged in.');
     if (m[1] !== 'avatars') channelAccess(m[1], user.id);
@@ -591,4 +651,4 @@ function memberRole(add) {
 route('PUT', '/api/servers/:id/members/:userId/roles/:roleId', memberRole(true));
 route('DELETE', '/api/servers/:id/members/:userId/roles/:roleId', memberRole(false));
 
-module.exports = { handle, serveUpload, channelAccess, state };
+module.exports = { handle, serveUpload, channelAccess, state, cookie, sameOrigin };

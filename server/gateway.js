@@ -13,7 +13,7 @@ const auth = require('./auth');
 const bus = require('./bus');
 const state = require('./state');
 const ser = require('./serialize');
-const { channelAccess } = require('./api');
+const { channelAccess, cookie, sameOrigin } = require('./api');
 
 const sessions = new Map(); // sessionId -> session
 const byTopic = new Map();  // topic -> Set(session)
@@ -38,6 +38,12 @@ bus.on('event', (topic, ev) => {
   for (const s of [...set]) {
     // Events addressed to one specific session (voice signaling).
     if (ev.toSession && ev.toSession !== s.id) continue;
+    // Password changed or devices signed out: drop connections whose login
+    // is no longer valid.
+    if (ev.t === 'SESSIONS_REVOKED') {
+      if (!auth.userFromToken(s.token)) s.ws.close(4004, 'session revoked');
+      continue;
+    }
     // Keep subscriptions in step with membership changes.
     if (ev.t === 'SERVER_CREATE') subscribe(s, `server:${ev.d.id}`);
     if (ev.t === 'SERVER_DELETE') {
@@ -55,8 +61,13 @@ bus.on('event', (topic, ev) => {
   }
 });
 
-function onConnection(ws) {
-  const session = { id: randomCode(9), ws, user: null, topics: new Set(), voice: null, lastTyping: 0 };
+function onConnection(ws, req) {
+  // Refuse WebSocket connections opened by other websites (cross-site
+  // WebSocket hijacking). Browsers always send Origin on WebSocket requests.
+  const origin = sameOrigin(req);
+  if (origin === false) return ws.close(4003, 'bad origin');
+  const cookieToken = cookie(req, 'hearth_token');
+  const session = { id: randomCode(9), ws, user: null, token: null, topics: new Set(), voice: null, lastTyping: 0 };
   const identifyTimer = setTimeout(() => ws.close(4001, 'identify timeout'), 10000);
 
   ws.on('message', (raw) => {
@@ -64,8 +75,11 @@ function onConnection(ws) {
     try { msg = JSON.parse(raw); } catch { return ws.close(4002, 'bad json'); }
     if (!session.user) {
       if (msg.op !== 'IDENTIFY') return ws.close(4003, 'identify first');
-      const user = auth.userFromToken(msg.token);
+      // Browsers authenticate with the HttpOnly cookie; bots/tests may send a token.
+      const token = typeof msg.token === 'string' && msg.token ? msg.token : (origin ? cookieToken : null);
+      const user = auth.userFromToken(token);
       if (!user) return ws.close(4004, 'invalid token');
+      session.token = token;
       clearTimeout(identifyTimer);
       session.user = user;
       sessions.set(session.id, session);

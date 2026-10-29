@@ -23,21 +23,22 @@ async function req(method, p, body, token, extra = {}) {
     body: extra.raw || (body ? JSON.stringify(body) : undefined),
   });
   const text = await res.text();
-  return { status: res.status, data: text ? JSON.parse(text) : null };
+  return { status: res.status, data: text ? JSON.parse(text) : null, headers: res.headers };
 }
 
-function client(token) {
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/gateway`);
+function client(token, opts) {
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/gateway`, opts);
   const events = [];
   const waiters = [];
-  ws.onopen = () => ws.send(JSON.stringify({ op: 'IDENTIFY', token }));
+  const closed = new Promise((r) => { ws.onclose = (e) => r(e.code); });
+  ws.onopen = () => ws.send(JSON.stringify(token ? { op: 'IDENTIFY', token } : { op: 'IDENTIFY' }));
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     events.push(msg);
     for (const w of [...waiters]) if (w.match(msg)) { waiters.splice(waiters.indexOf(w), 1); w.resolve(msg); }
   };
   return {
-    ws, events,
+    ws, events, closed,
     send: (o) => ws.send(JSON.stringify(o)),
     wait(t, pred = () => true, ms = 3000) {
       const found = events.find((m) => m.t === t && pred(m.d));
@@ -57,12 +58,20 @@ function ok(label) { passed++; console.log('  ✓', label); }
 async function main() {
   await new Promise((r) => srv.stdout.once('data', r));
 
-  const a = await req('POST', '/auth/register', { username: 'alice', password: 'password123', displayName: 'Alice' });
-  const b = await req('POST', '/auth/register', { username: 'bob', password: 'password123' });
-  assert.equal(a.status, 200); assert.equal(b.status, 200);
-  assert.equal((await req('POST', '/auth/register', { username: 'ALICE', password: 'password123' })).status, 409);
-  assert.equal((await req('POST', '/auth/login', { username: 'alice', password: 'wrong-pass' })).status, 401);
+  const PW = 'velvet harbor lantern 42';
+  const a = await req('POST', '/auth/register', { username: 'alice', password: PW, displayName: 'Alice', returnToken: true });
+  const b = await req('POST', '/auth/register', { username: 'bob', password: PW, returnToken: true });
+  assert.equal(a.status, 200, JSON.stringify(a.data)); assert.equal(b.status, 200);
+  assert.equal((await req('POST', '/auth/register', { username: 'ALICE', password: PW })).status, 409);
+  assert.equal((await req('POST', '/auth/login', { username: 'alice', password: 'wrong-pass-123' })).status, 401);
   ok('register, duplicate check, bad login rejected');
+
+  for (const [pw, why] of [['short1', 'too short'], ['password1234', 'common'], ['Qwerty123456', 'common (any capitalization)'],
+    ['carol-is-the-best', 'contains username'], ['aaaaaaaaaaaaaa', 'repetitive']]) {
+    const r = await req('POST', '/auth/register', { username: 'carol', password: pw });
+    assert.equal(r.status, 400, `${why} password should be rejected`);
+  }
+  ok('weak passwords rejected (length, common list, username, repetition)');
   const A = a.data.token; const B = b.data.token;
 
   const ca = client(A); const cb = client(B);
@@ -164,6 +173,81 @@ async function main() {
   assert.equal((await req('POST', `/invites/${inv.code}`, null, B)).status, 403);
   ok('ban removes member live and blocks rejoining');
 
+
+  // ---------------- security checks ----------------
+  const { DatabaseSync } = require('node:sqlite');
+  const dbr = new DatabaseSync(path.join(dataDir, 'hearth.db'), { readOnly: true });
+  const aliceRow = dbr.prepare("SELECT password_hash FROM users WHERE username = 'alice'").get();
+  assert.match(aliceRow.password_hash, /^scrypt\$32768\$8\$3\$/);
+  assert.ok(!aliceRow.password_hash.includes(PW));
+  const sessRows = dbr.prepare('SELECT token_hash FROM auth_sessions').all();
+  assert.ok(sessRows.length > 0 && sessRows.every((r) => /^[0-9a-f]{64}$/.test(r.token_hash)));
+  assert.ok(!sessRows.some((r) => r.token_hash === A));
+  dbr.close();
+  ok('database holds only scrypt hashes and hashed session tokens');
+
+  // Browser-style login: token only in an HttpOnly cookie.
+  const web = await req('POST', '/auth/login', { username: 'alice', password: PW }, null, { headers: { Origin: BASE } });
+  assert.equal(web.status, 200); assert.equal(web.data.token, undefined);
+  const setCookie = web.headers.get('set-cookie');
+  assert.match(setCookie, /HttpOnly/); assert.match(setCookie, /SameSite=Strict/);
+  const cookieHdr = setCookie.split(';')[0];
+  const host = new URL(BASE).host;
+  const viaCookie = (method, p, body, origin) => req(method, p, body, null, { headers: { Cookie: cookieHdr, ...(origin ? { Origin: origin } : {}) } });
+  assert.equal((await viaCookie('GET', '/users/@me')).status, 200);
+  assert.equal((await viaCookie('POST', '/servers', { name: 'evil' }, 'https://evil.example')).status, 403);
+  assert.equal((await viaCookie('POST', '/servers', { name: 'no-origin' })).status, 403);
+  assert.equal((await viaCookie('POST', '/servers', { name: 'ok' }, `http://${host}`)).status, 200);
+  assert.equal((await req('POST', '/auth/login', { username: 'alice', password: PW }, null, { headers: { Origin: 'https://evil.example' } })).status, 403);
+  ok('login cookie is HttpOnly/SameSite; cross-site requests blocked (CSRF)');
+
+  const evilWs = client(null, { headers: { Cookie: cookieHdr, Origin: 'https://evil.example' } });
+  assert.equal(await evilWs.closed, 4003);
+  const goodWs = client(null, { headers: { Cookie: cookieHdr, Origin: `http://${host}` } });
+  await goodWs.wait('READY');
+  ok('WebSocket: cookie login works, other websites refused');
+
+  // Upgrading an old-style hash on login.
+  {
+    const crypto = require('node:crypto');
+    const salt = crypto.randomBytes(16);
+    const oldHash = `scrypt$${salt.toString('hex')}$${crypto.scryptSync('legacy pass phrase', salt, 64, { N: 16384, r: 8, p: 1 }).toString('hex')}`;
+    await req('POST', '/auth/register', { username: 'legacy', password: 'temporary words here' });
+    const w = new DatabaseSync(path.join(dataDir, 'hearth.db'));
+    w.exec('PRAGMA busy_timeout = 5000');
+    w.prepare("UPDATE users SET password_hash = ? WHERE username = 'legacy'").run(oldHash);
+    assert.equal((await req('POST', '/auth/login', { username: 'legacy', password: 'legacy pass phrase' })).status, 200);
+    assert.match(w.prepare("SELECT password_hash FROM users WHERE username = 'legacy'").get().password_hash, /^scrypt\$32768\$/);
+    w.close();
+  }
+  ok('older password hashes upgraded automatically on login');
+
+  // Changing password signs out other devices immediately.
+  const other = await req('POST', '/auth/login', { username: 'alice', password: PW, returnToken: true });
+  const otherWs = client(other.data.token);
+  await otherWs.wait('READY');
+  const NEWPW = 'copper meadow rocket 7';
+  assert.equal((await req('POST', '/users/@me/password', { currentPassword: 'nope nope nope', newPassword: NEWPW }, A)).status, 403);
+  assert.equal((await req('POST', '/users/@me/password', { currentPassword: PW, newPassword: NEWPW }, A)).status, 200);
+  assert.equal(await otherWs.closed, 4004);
+  assert.equal((await req('GET', '/users/@me', null, other.data.token)).status, 401);
+  assert.equal((await req('GET', '/users/@me', null, A)).status, 200);
+  assert.equal((await req('POST', '/auth/login', { username: 'alice', password: NEWPW })).status, 200);
+  ok('password change requires current password and signs out other devices');
+
+  const sessions = (await req('GET', '/users/@me/sessions', null, A)).data;
+  assert.ok(sessions.some((x) => x.current));
+  await req('POST', '/auth/logout', null, A);
+  assert.equal((await req('GET', '/users/@me', null, A)).status, 401);
+  ok('device list and logout');
+
+  for (let i = 0; i < 5; i++) await req('POST', '/auth/login', { username: 'bob', password: 'wrong guess ' + i });
+  const locked = await req('POST', '/auth/login', { username: 'bob', password: PW });
+  assert.equal(locked.status, 429);
+  assert.ok(locked.headers.get('retry-after'));
+  ok('repeated wrong passwords lock the account temporarily');
+
+  goodWs.ws.close();
   ca.ws.close(); cb.ws.close();
   console.log(`\nAll ${passed} checks passed.`);
 }
