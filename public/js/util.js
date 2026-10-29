@@ -51,7 +51,8 @@ export function initials(name) {
 
 // Stable color per user id.
 export function colorFor(id) {
-  const palette = ['#c2410c', '#b45309', '#4d7c0f', '#0f766e', '#1d4ed8', '#7c3aed', '#be185d', '#9f1239'];
+  // Phosphor-friendly avatar colors: greens, teals, ambers and muted tones.
+  const palette = ['#1f8a5b', '#0f766e', '#2f6f4f', '#a86400', '#8a5a00', '#4b6b8a', '#6b5b8a', '#7a4a3a'];
   let h = 0;
   for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return palette[h % palette.length];

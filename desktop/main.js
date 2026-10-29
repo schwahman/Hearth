@@ -118,7 +118,7 @@ function createMain() {
   const state = config.window || { width: 1280, height: 800 };
   mainWindow = new BrowserWindow({
     ...state, minWidth: 420, minHeight: 500, show: false, title: 'Hearth',
-    backgroundColor: '#121110', icon: iconPath, autoHideMenuBar: true,
+    backgroundColor: '#080d0a', icon: iconPath, autoHideMenuBar: true,
     webPreferences: {
       // First run gets the server-setup bridge; afterwards the page gets
       // only the small hearthDesktop bridge.

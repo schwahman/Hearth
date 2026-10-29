@@ -5,6 +5,20 @@ import { Voice } from './voice.js';
 import {
   el, $, renderMarkdown, initials, colorFor, fmtTime, fmtDay, fmtSize, toast, modal, confirmDialog,
 } from './util.js';
+import * as sfx from './sfx.js';
+
+// ---------------------------------------------------------------- appearance
+// Dark (default), grey, light, or follow the device setting.
+const systemLight = window.matchMedia('(prefers-color-scheme: light)');
+function themePref() { try { return localStorage.getItem('hearth_theme') || 'dark'; } catch { return 'dark'; } }
+function applyTheme(pref = themePref()) {
+  const mode = pref === 'system' ? (systemLight.matches ? 'light' : 'dark') : pref;
+  document.documentElement.dataset.theme = mode;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = mode === 'light' ? '#f6faf7' : mode === 'grey' ? '#232d28' : '#0d1510';
+}
+systemLight.addEventListener('change', () => { if (themePref() === 'system') applyTheme(); });
+applyTheme();
 
 // Must match server/permissions.js
 const P = {
@@ -373,6 +387,13 @@ gw.on('PRESENCE_UPDATE', ({ userId, online }) => {
 });
 
 gw.on('VOICE_STATE_UPDATE', (v) => {
+  // Blip when someone else enters or leaves the call you're in.
+  if (voice.active && v.userId !== S.me.id) {
+    const was = voiceIn(voice.channelId).some((x) => x.userId === v.userId);
+    const now = v.channelId === voice.channelId;
+    if (now && !was) sfx.play('peerIn');
+    if (!now && was) sfx.play('peerOut');
+  }
   const scope = v.serverId ? S.servers.get(v.serverId)?.voiceStates : S.dmVoice;
   if (!scope) return;
   const i = scope.findIndex((x) => x.userId === v.userId);
@@ -411,6 +432,7 @@ function notifyMessage(m) {
   if (c.type !== 'dm' && !mentioned) return;
   if (!document.hidden && m.channelId === S.channelId) return;
   if (window.hearthDesktop) window.hearthDesktop.flash();
+  sfx.play('ping');
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const where = c.type === 'dm' ? '' : ` in #${c.name}`;
   const text = m.content || (m.attachments.length ? 'Sent a file' : '');
@@ -429,7 +451,7 @@ function updateBadge() {
 
 // Desktop app: global hotkeys that work even inside games.
 if (window.hearthDesktop) {
-  window.hearthDesktop.onToggleMute(() => { if (voice.active) { voice.setMuted(!voice.muted); toast(voice.muted ? 'Muted' : 'Unmuted'); } });
+  window.hearthDesktop.onToggleMute(() => { if (voice.active) { voice.setMuted(!voice.muted); sfx.play(voice.muted ? 'mute' : 'unmute'); toast(voice.muted ? 'Muted' : 'Unmuted'); } });
   window.hearthDesktop.onToggleDeafen(() => { if (voice.active) { voice.setDeafened(!voice.deafened); toast(voice.deafened ? 'Deafened' : 'Undeafened'); } });
 }
 
@@ -576,7 +598,7 @@ function renderSidebar() {
 function renderHeader() {
   const c = S.channelId ? findChannel(S.channelId) : null;
   const isDm = c && c.type === 'dm';
-  $('channel-icon').textContent = isDm ? '@' : '#';
+  $('channel-icon').textContent = c ? (isDm ? '@' : '#') : '';
   $('channel-name').textContent = c ? (isDm ? dmOther(c).displayName : c.name) : '';
   $('channel-topic').textContent = c && !isDm ? c.topic || '' : '';
   $('channel-topic').classList.toggle('hidden', !(c && c.topic && !isDm));
@@ -591,8 +613,9 @@ function renderHeader() {
     $('messages').classList.add('hidden');
     empty.replaceChildren(S.serverId
       ? el('div', {}, el('h2', {}, 'No text channels'), el('p', {}, 'Create one with the + next to “Text channels”.'))
-      : el('div', {}, el('h2', {}, `Hi, ${S.me.displayName}`),
-        el('p', {}, 'Pick a conversation, start a new one with +, or use the + on the left to create or join a server.')));
+      : el('div', {}, el('h2', {}, `Welcome, ${S.me.displayName}`),
+        el('p', {}, 'Pick a conversation, start one with +, or create your own server.'),
+        el('button', { class: 'press-start', onclick: addServerModal }, 'PRESS START')));
   } else {
     empty.classList.add('hidden');
     $('messages').classList.remove('hidden');
@@ -846,6 +869,7 @@ async function joinVoice(channelId) {
   if (voice.channelId === channelId) { renderVoiceUI(); return; }
   try {
     await voice.join(channelId);
+    sfx.play('join');
   } catch (err) {
     if (isVoiceChannel) S.viewingVoice = null;
     toast(err.message);
@@ -930,11 +954,11 @@ function renderStage() {
   stage.replaceChildren(...tiles);
 }
 
-$('vc-mute').onclick = () => voice.setMuted(!voice.muted);
+$('vc-mute').onclick = () => { voice.setMuted(!voice.muted); sfx.play(voice.muted ? 'mute' : 'unmute'); };
 $('vc-deaf').onclick = () => voice.setDeafened(!voice.deafened);
 $('vc-cam').onclick = () => voice.toggleCamera().catch((e) => toast(e.message || 'Camera unavailable.'));
 $('vc-screen').onclick = () => voice.toggleScreen().catch((e) => { if (e.name !== 'NotAllowedError') toast(e.message || 'Screen share failed.'); });
-$('vc-leave').onclick = () => { voice.leave(); S.viewingVoice = null; renderVoiceUI(); };
+$('vc-leave').onclick = () => { voice.leave(); sfx.play('leave'); S.viewingVoice = null; renderVoiceUI(); };
 $('call-btn').onclick = () => S.channelId && joinVoice(S.channelId);
 window.addEventListener('beforeunload', () => voice.active && voice.leave());
 
@@ -1243,7 +1267,10 @@ function profileModal() {
     el('h2', {}, 'Your profile'),
     el('div', { style: { display: 'flex', gap: '14px', alignItems: 'center' } }, avatar(S.me, { size: 64 }),
       el('div', {}, el('strong', {}, '@' + S.me.username))),
-    lbl, el('label', {}, 'Avatar image', pic), err,
+    lbl, el('label', {}, 'Avatar image', pic),
+    el('label', {}, 'Appearance', themePicker()),
+    el('label', { class: 'check' }, soundToggle(), 'Retro sound effects'),
+    err,
     el('div', { class: 'row', style: { justifyContent: 'flex-start' } },
       el('button', { class: 'btn', onclick: () => { dlg.close(); passwordModal(); } }, 'Change password'),
       el('button', { class: 'btn', onclick: () => { dlg.close(); sessionsModal(); } }, 'Signed-in devices'),
@@ -1405,6 +1432,25 @@ function transferModal(s) {
         catch (e) { err.textContent = e.message; }
       } }, 'Transfer ownership')),
   ]);
+}
+
+function themePicker() {
+  const seg = el('div', { class: 'seg', style: { marginTop: '6px' } });
+  for (const [k, label] of [['dark', 'Dark'], ['grey', 'Grey'], ['light', 'Light'], ['system', 'Auto']]) {
+    seg.append(el('button', { type: 'button', class: themePref() === k ? 'on' : '', onclick: () => {
+      try { localStorage.setItem('hearth_theme', k); } catch { /* ignore */ }
+      applyTheme(k);
+      seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.textContent === label));
+    } }, label));
+  }
+  return seg;
+}
+
+function soundToggle() {
+  const cb = el('input', { type: 'checkbox' });
+  cb.checked = sfx.enabled();
+  cb.onchange = () => { sfx.setEnabled(cb.checked); if (cb.checked) sfx.play('unmute'); };
+  return cb;
 }
 
 boot();
