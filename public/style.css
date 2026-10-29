@@ -461,3 +461,12 @@ code, pre, .msg .time { font-family: var(--mono); }
 .pw-eye { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: none; border: 0; cursor: pointer;
   font-size: 16px; opacity: .5; padding: 4px 8px; }
 .pw-eye.on, .pw-eye:hover { opacity: 1; }
+
+/* ---------- categories ---------- */
+.cat.category { cursor: default; }
+.cat .cat-name { cursor: pointer; display: flex; gap: 4px; align-items: center; user-select: none; }
+.cat .cat-name:hover { color: var(--text); }
+.cat .chev { font-size: 10px; width: 10px; }
+.new-cat { margin: 14px 6px 4px; background: none; border: 1px dashed var(--line); color: var(--muted); border-radius: var(--radius);
+  padding: 6px; cursor: pointer; width: calc(100% - 12px); font-size: 12px; }
+.new-cat:hover { color: var(--text); border-color: var(--muted); }

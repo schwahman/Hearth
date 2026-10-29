@@ -148,6 +148,41 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
   }
 }
 
+// v0.3: channels can be categories. SQLite can't change a CHECK constraint,
+// so the table is rebuilt once (following SQLite's documented procedure,
+// with foreign keys paused so no messages are touched).
+{
+  const t = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'channels'").get();
+  if (t && !t.sql.includes("'category'")) {
+    const cols = db.prepare('PRAGMA table_info(channels)').all().map((c) => c.name);
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN');
+    try {
+      db.exec(`CREATE TABLE channels_v3 (
+        id         TEXT PRIMARY KEY,
+        server_id  TEXT REFERENCES servers(id) ON DELETE CASCADE,
+        name       TEXT NOT NULL,
+        type       TEXT NOT NULL CHECK (type IN ('text','voice','dm','category')),
+        topic      TEXT,
+        position   INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      )`);
+      db.exec('INSERT INTO channels_v3 (id, server_id, name, type, topic, position, created_at) SELECT id, server_id, name, type, topic, position, created_at FROM channels');
+      // Carry over any columns added later (slowmode, age rating, ...).
+      const base = ['id', 'server_id', 'name', 'type', 'topic', 'position', 'created_at'];
+      const extra = cols.filter((c) => !base.includes(c));
+      for (const c of extra) {
+        const info = db.prepare('PRAGMA table_info(channels)').all().find((x) => x.name === c);
+        db.exec(`ALTER TABLE channels_v3 ADD COLUMN ${c} ${info.type}${info.notnull ? ` NOT NULL DEFAULT ${info.dflt_value}` : ''}`);
+        db.exec(`UPDATE channels_v3 SET ${c} = (SELECT ${c} FROM channels WHERE channels.id = channels_v3.id)`);
+      }
+      db.exec('DROP TABLE channels');
+      db.exec('ALTER TABLE channels_v3 RENAME TO channels');
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; } finally { db.exec('PRAGMA foreign_keys = ON'); }
+  }
+}
+
 // Columns added after v0.1.
 function addColumn(table, column, type) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -166,6 +201,36 @@ addColumn('channels', 'age_rating', 'INTEGER NOT NULL DEFAULT 0'); // 0, 18 or 2
 addColumn('servers', 'age_rating', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('users', 'birthdate_enc', 'TEXT');                     // encrypted YYYY-MM-DD
 addColumn('messages', 'kind', 'TEXT');                           // null, 'me', 'roll', 'flip'
+addColumn('channels', 'parent_id', 'TEXT');                      // category this channel sits in
+addColumn('messages', 'import_source', 'TEXT');                  // 'discord' for imported history
+addColumn('messages', 'imported_author', 'TEXT');                // JSON: original sender's name, id, avatar, bot
+addColumn('messages', 'imported_reactions', 'TEXT');             // JSON: [{emoji, count}] from the original
+addColumn('channels', 'pending_review', 'INTEGER NOT NULL DEFAULT 0'); // imported: hidden from members until the owner reviews it
+addColumn('users', 'is_system', 'INTEGER NOT NULL DEFAULT 0');   // locked system accounts (e.g. the Discord archive)
+db.exec(`
+CREATE TABLE IF NOT EXISTS import_jobs (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  server_id   TEXT,
+  source      TEXT NOT NULL,
+  source_name TEXT,
+  status      TEXT NOT NULL,
+  options     TEXT NOT NULL,
+  progress    TEXT NOT NULL,
+  error       TEXT,
+  created_at  INTEGER NOT NULL,
+  finished_at INTEGER
+);
+-- Links original IDs to Hearth IDs so an interrupted import can resume
+-- without duplicating anything.
+CREATE TABLE IF NOT EXISTS import_map (
+  job_id    TEXT NOT NULL,
+  kind      TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  hearth_id TEXT NOT NULL,
+  PRIMARY KEY (job_id, kind, source_id)
+);
+`);
 // A Hearth always has a platform admin: if none exists yet, the oldest
 // account (the person who set the server up) becomes it.
 db.exec(`UPDATE users SET is_admin = 1 WHERE id = (SELECT id FROM users ORDER BY created_at LIMIT 1)

@@ -68,6 +68,7 @@ const S = {
   pending: [],          // files waiting to be sent
   presence: new Map(),  // userId -> online (live updates)
   blocked: new Set(),   // user ids I've blocked
+  collapsed: new Set(JSON.parse((() => { try { return localStorage.getItem('hearth_collapsed') || '[]'; } catch { return '[]'; } })())),
   revealed: new Set(),  // blocked messages I chose to show
   viewingVoice: null,   // voice channel shown full-screen in the main area
   stageWasFull: false,
@@ -140,6 +141,7 @@ const voiceIn = (channelId) => allVoiceStates().filter((v) => v.channelId === ch
 const DELETED_USER = { id: 'deleted', username: 'deleted', displayName: 'Deleted user', avatar: null };
 function dmOther(dm) { return dm.recipients.find((r) => r.id !== S.me.id) || DELETED_USER; }
 
+function saveCollapsed() { try { localStorage.setItem('hearth_collapsed', JSON.stringify([...S.collapsed])); } catch { /* ignore */ } }
 function saveLast() { localStorage.setItem('hearth_last', JSON.stringify(S.lastChannel)); }
 
 // ---------------------------------------------------------------- auth screen
@@ -618,40 +620,70 @@ function renderSidebar() {
   }
 
   const manage = can(P.MANAGE_CHANNELS, s);
-  const section = (type, label) => {
-    const chans = s.channels.filter((c) => c.type === type);
-    const out = [el('div', { class: 'cat' }, el('span', {}, label),
-      manage ? el('button', { class: 'icon-btn', title: `Create ${type} channel`, onclick: () => channelModal(s, type) }, '+') : null)];
-    for (const c of chans) {
-      const isText = type === 'text';
-      const tools = manage ? el('span', { class: 'tools' },
-        el('button', { class: 'icon-btn', title: 'Edit channel', onclick: (e) => { e.stopPropagation(); channelModal(s, type, c); } }, '⚙')) : null;
-      out.push(el('div', {
-        class: 'chan' + ((isText ? S.channelId === c.id && !S.viewingVoice : S.viewingVoice === c.id) ? ' active' : ''),
-        onclick: () => openChannel(c),
-        title: isText ? c.topic || c.name : 'Join voice',
-      },
-      el('span', { class: 'channel-icon' }, c.locked ? '\u{1F512}' : isText ? '#' : '🔊'),
-      el('span', { class: 'name' }, c.name),
-      c.ageRating ? el('span', { class: 'age-badge', title: `${c.ageRating}+ only` }, `${c.ageRating}+`) : null,
-      S.unread.has(c.id) ? el('span', { class: 'unread' }) : null,
-      tools));
-      if (!isText) {
-        const people = voiceIn(c.id);
-        if (people.length) {
-          out.push(el('div', { class: 'voice-users' }, people.map((v) => {
-            const u = userById(v.userId);
-            return el('div', { class: 'voice-user', 'data-voice-user': v.userId },
-              avatar(u), el('span', {}, displayName(u, s)),
-              el('span', { class: 'flags' },
-                v.screen ? '🖥' : '', v.video ? '📷' : '', v.deaf ? '🔇' : v.mute ? '🎙̸' : ''));
-          })));
-        }
+  const byPos = (a, b) => a.position - b.position || (a.id < b.id ? -1 : 1);
+  const row = (c) => {
+    const isText = c.type === 'text';
+    const out = [];
+    const tools = manage ? el('span', { class: 'tools' },
+      el('button', { class: 'icon-btn', title: 'Edit channel', onclick: (e) => { e.stopPropagation(); channelModal(s, c.type, c); } }, '⚙')) : null;
+    out.push(el('div', {
+      class: 'chan' + ((isText ? S.channelId === c.id && !S.viewingVoice : S.viewingVoice === c.id) ? ' active' : ''),
+      onclick: () => openChannel(c),
+      title: isText ? c.topic || c.name : 'Join voice',
+    },
+    el('span', { class: 'channel-icon' }, c.locked ? '\u{1F512}' : isText ? '#' : '🔊'),
+    el('span', { class: 'name' }, c.name),
+    c.ageRating ? el('span', { class: 'age-badge', title: `${c.ageRating}+ only` }, `${c.ageRating}+`) : null,
+    S.unread.has(c.id) ? el('span', { class: 'unread' }) : null,
+    tools));
+    if (!isText) {
+      const people = voiceIn(c.id);
+      if (people.length) {
+        out.push(el('div', { class: 'voice-users' }, people.map((v) => {
+          const u = userById(v.userId);
+          return el('div', { class: 'voice-user', 'data-voice-user': v.userId },
+            avatar(u), el('span', {}, displayName(u, s)),
+            el('span', { class: 'flags' },
+              v.screen ? '🖥' : '', v.video ? '📷' : '', v.deaf ? '🔇' : v.mute ? '🎙̸' : ''));
+        })));
       }
     }
     return out;
   };
-  list.replaceChildren(...section('text', 'Text channels'), ...section('voice', 'Voice channels'));
+  // Channels inside a category show text first, then voice (like Discord).
+  const kids = (parentId) => s.channels.filter((c) => (c.parentId || null) === parentId && c.type !== 'category')
+    .sort((a, b) => (a.type === b.type ? byPos(a, b) : a.type === 'text' ? -1 : 1));
+  const out = [];
+  const loose = kids(null);
+  const looseText = loose.filter((c) => c.type === 'text');
+  const looseVoice = loose.filter((c) => c.type === 'voice');
+  const cats = s.channels.filter((c) => c.type === 'category').sort(byPos);
+  if (looseText.length || !cats.length) {
+    out.push(el('div', { class: 'cat' }, el('span', {}, 'Text channels'),
+      manage ? el('button', { class: 'icon-btn', title: 'Create text channel', onclick: () => channelModal(s, 'text') }, '+') : null));
+    for (const c of looseText) out.push(...row(c));
+  }
+  if (looseVoice.length || !cats.length) {
+    out.push(el('div', { class: 'cat' }, el('span', {}, 'Voice channels'),
+      manage ? el('button', { class: 'icon-btn', title: 'Create voice channel', onclick: () => channelModal(s, 'voice') }, '+') : null));
+    for (const c of looseVoice) out.push(...row(c));
+  }
+  for (const cat of cats) {
+    const collapsed = S.collapsed.has(cat.id);
+    const children = kids(cat.id);
+    out.push(el('div', { class: 'cat category' + (collapsed ? ' collapsed' : '') },
+      el('span', { class: 'cat-name', onclick: () => { if (collapsed) S.collapsed.delete(cat.id); else S.collapsed.add(cat.id); saveCollapsed(); renderSidebar(); } },
+        el('span', { class: 'chev' }, collapsed ? '▸' : '▾'), cat.name),
+      manage ? el('span', {},
+        el('button', { class: 'icon-btn', title: 'Create channel here', onclick: () => channelModal(s, 'text', null, cat.id) }, '+'),
+        el('button', { class: 'icon-btn', title: 'Edit category', onclick: () => categoryModal(s, cat) }, '⚙')) : null));
+    for (const c of children) {
+      if (collapsed && !(S.channelId === c.id || S.unread.has(c.id) || voiceIn(c.id).length)) continue;
+      out.push(...row(c));
+    }
+  }
+  if (manage) out.push(el('button', { class: 'new-cat', onclick: () => categoryModal(s) }, '+ New category'));
+  list.replaceChildren(...out);
 }
 
 function renderHeader() {
@@ -1945,13 +1977,16 @@ async function reportsTab(s) {
 }
 
 // ================================================================ channel settings
-function channelModal(s, type, existing) {
+function channelModal(s, type, existing, parentId) {
   const [lblName, name] = field('Channel name', { maxlength: 64, value: existing ? existing.name : '' });
   const [lblTopic, topic] = field('Topic (optional)', { maxlength: 256, value: existing ? existing.topic : '' });
   const slow = el('select', {}, [[0, 'Off'], [5, '5 seconds'], [30, '30 seconds'], [60, '1 minute'], [300, '5 minutes'], [900, '15 minutes'], [3600, '1 hour']]
     .map(([v, l]) => el('option', { value: v, selected: existing && existing.slowmode === v }, l)));
   const age = el('select', {}, [[0, 'Everyone (13+)'], [18, '18+ only (adult content)'], [21, '21+ only (alcohol, cannabis, gambling)']]
     .map(([v, l]) => el('option', { value: v, selected: existing && existing.ageRating === v }, l)));
+  const cats = s.channels.filter((c) => c.type === 'category');
+  const parentSel = el('select', {}, el('option', { value: '' }, 'No category'),
+    cats.map((c) => el('option', { value: c.id, selected: (existing ? existing.parentId : parentId) === c.id }, c.name)));
   const err = el('p', { class: 'error' });
 
   // Simple privacy controls built on permission overrides.
@@ -1987,12 +2022,12 @@ function channelModal(s, type, existing) {
   const save = async () => {
     err.textContent = '';
     try {
-      const patch = { name: name.value, ageRating: Number(age.value), slowmode: Number(slow.value) };
+      const patch = { name: name.value, ageRating: Number(age.value), slowmode: Number(slow.value), parentId: parentSel.value || null };
       if (type === 'text') patch.topic = topic.value;
       let id;
       if (existing) { await api('PATCH', `/channels/${existing.id}`, patch); id = existing.id; }
       else {
-        const c = await api('POST', `/servers/${s.id}/channels`, { name: name.value, type, topic: topic.value });
+        const c = await api('POST', `/servers/${s.id}/channels`, { name: name.value, type, topic: topic.value, parentId: parentSel.value || null });
         id = c.id;
         if (patch.ageRating || patch.slowmode) await api('PATCH', `/channels/${id}`, patch);
       }
@@ -2013,6 +2048,7 @@ function channelModal(s, type, existing) {
   name.addEventListener('keydown', (e) => e.key === 'Enter' && save());
   const dlg = modal([
     el('h2', {}, existing ? 'Edit channel' : `Create ${type} channel`), lblName, type === 'text' ? lblTopic : null,
+    cats.length ? el('label', {}, 'Category', parentSel) : null,
     type === 'text' ? el('label', {}, 'Slowmode', slow) : null,
     el('label', {}, 'Who can view it', age),
     permBox, err,
@@ -2424,5 +2460,30 @@ function helpMenu() {
   ]);
 }
 $('help-btn').onclick = helpMenu;
+
+function categoryModal(s, existing) {
+  const [lbl, name] = field('Category name', { maxlength: 64, value: existing ? existing.name : '' });
+  const err = el('p', { class: 'error' });
+  const save = async () => {
+    try {
+      if (existing) await api('PATCH', `/channels/${existing.id}`, { name: name.value });
+      else await api('POST', `/servers/${s.id}/channels`, { name: name.value, type: 'category' });
+      dlg.close();
+    } catch (e) { err.textContent = e.message; }
+  };
+  name.addEventListener('keydown', (e) => e.key === 'Enter' && save());
+  const dlg = modal([
+    el('h2', {}, existing ? 'Edit category' : 'New category'), lbl,
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'Categories group channels in the list. Put a channel in a category from that channel’s settings.'),
+    err,
+    el('div', { class: 'row' },
+      existing ? el('button', { class: 'btn danger', style: { marginRight: 'auto' }, onclick: async () => {
+        if (!(await confirmDialog('Delete category', `Delete "${existing.name}"? Its channels stay; they just won’t be grouped.`, 'Delete'))) return;
+        try { await api('DELETE', `/channels/${existing.id}`); dlg.close(); } catch (e) { err.textContent = e.message; }
+      } }, 'Delete') : null,
+      el('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'),
+      el('button', { class: 'btn primary', onclick: save }, existing ? 'Save' : 'Create')),
+  ]);
+}
 
 boot();

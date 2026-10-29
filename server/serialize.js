@@ -12,6 +12,7 @@ function channel(row) {
   const c = {
     id: row.id, serverId: row.server_id, name: row.name, type: row.type,
     topic: row.topic || '', position: row.position, slowmode: row.slowmode || 0, ageRating: row.age_rating || 0,
+    parentId: row.parent_id || null, pendingReview: !!row.pending_review,
   };
   if (row.server_id) {
     c.overrides = all('SELECT target_type, target_id, allow, deny FROM channel_overrides WHERE channel_id = ?', row.id)
@@ -108,6 +109,10 @@ function messages(rows, viewerId) {
       content: r.content, attachments: r.attachments ? JSON.parse(r.attachments) : [],
       replyTo: r.reply_to || null, createdAt: r.created_at, editedAt: r.edited_at || null, kind: r.kind || null,
       reactions: reactions.get(r.id) || [],
+      ...(r.import_source ? {
+        imported: { source: r.import_source, ...(r.imported_author ? JSON.parse(r.imported_author) : {}) },
+        importedReactions: r.imported_reactions ? JSON.parse(r.imported_reactions) : [],
+      } : {}),
     };
   });
 }

@@ -9,10 +9,14 @@ const assert = require('node:assert/strict');
 
 const PORT = 18000 + Math.floor(Math.random() * 1000);
 const BASE = `http://127.0.0.1:${PORT}`;
+const MOCK_PORT = PORT + 1000;
+const mockDiscord = require('./mock-discord');
+const mockReady = mockDiscord.start(MOCK_PORT);
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-test-'));
 
 const srv = spawn(process.execPath, ['--no-warnings', path.join(__dirname, '..', 'server', 'index.js')], {
-  env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, MAIL_DEV: 'true', RATE_LIMIT_SCALE: '20' },
+  env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, MAIL_DEV: 'true', RATE_LIMIT_SCALE: '20',
+    DISCORD_API_BASE: `http://127.0.0.1:${MOCK_PORT}/api`, DISCORD_CDN_BASE: `http://127.0.0.1:${MOCK_PORT}/cdn` },
   stdio: ['ignore', 'pipe', 'inherit'],
 });
 
@@ -480,6 +484,101 @@ async function main() {
   assert.equal(purged.deleted, 3);
   assert.equal((await req('POST', `/channels/${msGen.id}/purge`, { count: 3 }, T)).status, 403);
   ok('slash command actions: server-side dice and coin, /me, moderator purge');
+
+  // ---------------- Discord import ----------------
+  await mockReady;
+  const P_ = { VIEW_CHANNELS: 1, SEND_MESSAGES: 2, MANAGE_MESSAGES: 16, KICK_MEMBERS: 512, MODERATE_MEMBERS: 16384 };
+  const JN = (await req('POST', '/auth/register', { acceptTerms: true, username: 'joiner', password: 'joining later phrase 3', returnToken: true })).data.token;
+  const IM = (await req('POST', '/auth/register', { acceptTerms: true, username: 'mover', password: 'moving day phrase 9', returnToken: true })).data.token;
+  assert.equal((await req('POST', '/imports/discord/inspect', { token: 'nope' }, IM)).status, 400);
+  assert.equal((await req('POST', '/imports/discord/inspect', { token: 'MTA.wrong-token.' + 'y'.repeat(40) }, IM)).status, 400);
+  const insp = (await req('POST', '/imports/discord/inspect', { token: mockDiscord.TOKEN }, IM)).data;
+  assert.equal(insp.messageContentIntent, true);
+  assert.match(insp.inviteUrl, /client_id=1000000000000000999&scope=bot&permissions=66560$/);
+  assert.equal(insp.guilds[0].name, 'Retro Gamers');
+  const pv = (await req('POST', '/imports/discord/preview', { token: mockDiscord.TOKEN, guildId: mockDiscord.GUILD }, IM)).data;
+  const pvc = Object.fromEntries(pv.channels.map((c) => [c.name, c]));
+  assert.equal(pvc.staff.readable, false); assert.equal(pvc.general.readable, true); assert.equal(pvc.staff.private, true);
+  assert.equal(pvc['help-forum'].type, 'unsupported');
+  assert.deepEqual(pv.roles.map((r) => r.name), ['Mods', 'VIP']); assert.deepEqual(pv.skippedRoles, ['HearthMover']);
+  ok('import wizard: token checked, invite link built, server preview shows what the bot can read');
+
+  const { C: DC } = mockDiscord;
+  assert.equal((await req('POST', '/imports/discord', { token: mockDiscord.TOKEN, options: { guildId: mockDiscord.GUILD } }, IM)).status, 400);
+  const job = (await req('POST', '/imports/discord', {
+    token: mockDiscord.TOKEN, accepted: true,
+    options: { guildId: mockDiscord.GUILD, channels: { [DC.general]: { messages: true }, [DC.news]: { messages: true }, [DC.staff]: { messages: true }, [DC.memes]: { messages: false } } },
+  }, IM)).data;
+  let done;
+  for (let t = 0; t < 100; t++) {
+    done = (await req('GET', '/imports', null, IM)).data.find((j) => j.id === job.id);
+    if (done.status !== 'running') break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.equal(done.status, 'done', JSON.stringify(done));
+  assert.equal(done.progress.messages, 155); // 150 + reply + mentions + file + embed + rule; join notice skipped
+  assert.equal(done.progress.files, 1);
+  assert.ok(done.progress.notes.some((n) => /staff.*couldn.t read/.test(n)));
+  assert.ok(done.progress.notes.some((n) => /help-forum/.test(n)));
+  const isrv = (await req('GET', `/servers/${done.serverId}`, null, IM)).data;
+  assert.equal(isrv.name, 'Retro Gamers'); assert.ok(isrv.icon);
+  const byName = Object.fromEntries(isrv.channels.map((c) => [c.name, c]));
+  assert.equal(byName.Chat.type, 'category'); assert.equal(byName.general.parentId, byName.Chat.id);
+  assert.equal(byName.rules.parentId, byName.Information.id); assert.equal(byName.welcome.parentId, null);
+  assert.equal(byName.Lounge.type, 'voice'); assert.ok(!byName['help-forum']);
+  assert.equal(byName.general.slowmode, 10); assert.equal(byName.general.topic, 'Talk about anything');
+  assert.equal(byName.memes.ageRating, 18);
+  assert.ok(isrv.channels.every((c) => c.pendingReview));
+  const mods = isrv.roles.find((r) => r.name === 'Mods'); const evr = isrv.roles.find((r) => r.isDefault);
+  assert.equal(mods.color, '#33ff66'); assert.ok(mods.position > isrv.roles.find((r) => r.name === 'VIP').position);
+  assert.equal(mods.permissions, P_.MANAGE_MESSAGES | P_.KICK_MEMBERS | P_.MODERATE_MEMBERS);
+  assert.ok(!isrv.roles.some((r) => r.name === 'HearthMover'));
+  assert.equal(evr.permissions & P_.SEND_MESSAGES, P_.SEND_MESSAGES);
+  const staffOv = byName.staff.overrides;
+  assert.ok(staffOv.find((o) => o.id === evr.id && o.deny === P_.VIEW_CHANNELS));
+  assert.ok(staffOv.find((o) => o.id === mods.id && o.allow === P_.VIEW_CHANNELS));
+  assert.ok(byName.rules.overrides.find((o) => o.id === evr.id && o.deny === P_.SEND_MESSAGES));
+  ok('import rebuilds server, roles (color, order, permissions), categories, channels and their permissions');
+
+  let hist = [];
+  let before = '';
+  for (;;) {
+    const page = (await req('GET', `/channels/${byName.general.id}/messages?limit=100${before}`, null, IM)).data;
+    if (!page.length) break;
+    hist = page.concat(hist); before = `&before=${page[0].id}`;
+  }
+  assert.equal(hist.length, 155); // 154 + the "archived above" divider
+  assert.equal(hist[0].content, 'message 0'); assert.equal(hist[149].content, 'message 149');
+  assert.ok(hist.every((m, i) => i === 0 || m.createdAt >= hist[i - 1].createdAt));
+  assert.equal(hist[0].imported.name, 'Alice A'); assert.equal(hist[0].imported.username, 'alice'); assert.ok(hist[0].imported.avatar);
+  assert.equal(hist[1].imported.name, 'bob'); assert.equal(hist[0].createdAt, Date.UTC(2023, 0, 1) + 10 * 60000);
+  assert.equal(hist[150].replyTo, hist[0].id);
+  assert.equal(hist[151].content, 'hey @bob see #rules :pog: @Mods');
+  assert.deepEqual(hist[151].importedReactions, [{ emoji: '👍', count: 3 }, { emoji: ':pog:', count: 1 }]);
+  const fileUrl = hist[152].attachments[0].url;
+  assert.ok(fileUrl.startsWith(`/uploads/${byName.general.id}/`));
+  assert.equal((await fetch(BASE + fileUrl, { headers: { Authorization: 'Bearer ' + IM } })).status, 200);
+  assert.match(hist[153].content, /Server stats.*42 members.*\*\*Online\*\*: 7/s); assert.equal(hist[153].imported.bot, true);
+  assert.equal(hist[154].kind, 'import_marker');
+  assert.equal((await req('GET', `/channels/${byName.memes.id}/messages`, null, IM)).data.length, 0);
+  assert.equal((await req('GET', `/channels/${byName.staff.id}/messages`, null, IM)).data.length, 0);
+  assert.equal((await req('PATCH', `/messages/${hist[0].id}`, { content: 'mine now' }, IM)).status, 403);
+  assert.equal((await req('POST', '/dms', { username: 'discord-archive' }, IM)).status, 404);
+  assert.equal((await req('POST', '/auth/login', { username: 'discord-archive', password: 'anything at all 1' })).status, 401);
+  ok('import brings history in order with original names, replies, mentions, files, embeds and reactions; archive is locked');
+
+  const iinv = (await req('POST', `/servers/${done.serverId}/invites`, {}, IM)).data;
+  await req('POST', `/invites/${iinv.code}`, null, JN);
+  assert.equal((await req('GET', `/servers/${done.serverId}`, null, JN)).data.channels.length, 0);
+  assert.equal((await req('GET', `/channels/${byName.general.id}/messages`, null, JN)).status, 404);
+  await req('PATCH', `/channels/${byName.general.id}`, { pendingReview: false }, IM);
+  assert.ok((await req('GET', `/servers/${done.serverId}`, null, JN)).data.channels.some((c) => c.id === byName.general.id));
+  assert.equal((await req('POST', `/servers/${done.serverId}/channels/open`, {}, JN)).status, 403);
+  assert.ok((await req('POST', `/servers/${done.serverId}/channels/open`, {}, IM)).data.opened > 5);
+  const importVisible = (await req('GET', `/servers/${done.serverId}`, null, JN)).data.channels.map((c) => c.name);
+  assert.ok(importVisible.includes('rules') && !importVisible.includes('staff'));
+  ok('imported channels stay hidden from members until the owner reviews and opens them');
+
   cu.ws.close();
   ca.ws.close(); cb.ws.close();
   console.log(`\nAll ${passed} checks passed.`);

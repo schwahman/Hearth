@@ -7,6 +7,8 @@
 //    then allow, with member overrides winning. That's how private and
 //    read-only channels work.
 //  - Members in a timeout keep read access but can't post, react or talk.
+//  - Channels brought over by an import are hidden ("pending review") from
+//    everyone except the owner and Administrators until they're opened up.
 'use strict';
 const { one, all } = require('./db');
 
@@ -76,6 +78,9 @@ function channelPermissions(channel, userId) {
   // Age limits apply to everyone, owners and admins included.
   if (ageBlock(channel, userId)) return 0;
   if ((base & P.ADMINISTRATOR) || one('SELECT 1 FROM servers WHERE id = ? AND owner_id = ?', serverId, userId)) return ALL;
+  // Imported channels stay hidden from everyone but the owner and
+  // Administrators until someone reviews their permissions and opens them up.
+  if (channel.pending_review) return 0;
   const overrides = all('SELECT target_type, target_id, allow, deny FROM channel_overrides WHERE channel_id = ?', channel.id);
   if (!overrides.length) return base;
   let perms = base;

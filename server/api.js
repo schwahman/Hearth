@@ -436,6 +436,7 @@ function messageSnapshot(rows) {
     id: m.id, channelId: m.channel_id, authorId: m.author_id, author: userName(m.author_id),
     content: m.content, attachments: m.attachments ? JSON.parse(m.attachments) : [],
     createdAt: m.created_at, editedAt: m.edited_at,
+    ...(m.import_source ? { importedFrom: m.import_source, importedAuthor: m.imported_author ? JSON.parse(m.imported_author) : null } : {}),
   }));
 }
 
@@ -641,13 +642,14 @@ route('POST', '/api/invites/:code', ({ user, params }) => {
 // ---------- channels ----------
 route('POST', '/api/servers/:id/channels', ({ user, params, body }) => {
   requireServerPerm(params.id, user.id, P.MANAGE_CHANNELS);
-  const type = body.type === 'voice' ? 'voice' : 'text';
+  const type = ['voice', 'category'].includes(body.type) ? body.type : 'text';
   let name = str(body.name, 'Channel name', 1, 64);
   if (type === 'text') name = name.toLowerCase().replace(/\s+/g, '-');
+  const parentId = type !== 'category' ? checkParent(params.id, body.parentId) : null;
   const pos = one('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM channels WHERE server_id = ?', params.id).p;
   const id = newId();
-  run('INSERT INTO channels (id, server_id, name, type, topic, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    id, params.id, name, type, (body.topic || '').slice(0, 256), pos, Date.now());
+  run('INSERT INTO channels (id, server_id, name, type, topic, position, created_at, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    id, params.id, name, type, (body.topic || '').slice(0, 256), pos, Date.now(), parentId);
   const c = ser.channel(one('SELECT * FROM channels WHERE id = ?', id));
   bus.publish(`server:${params.id}`, { t: 'CHANNEL_CREATE', d: c });
   audit(params.id, user.id, 'channel.create', { type: 'channel', id, name });
@@ -665,6 +667,14 @@ route('PATCH', '/api/channels/:id', ({ user, params, body }) => {
   }
   if (body.topic !== undefined) run('UPDATE channels SET topic = ? WHERE id = ?', String(body.topic).slice(0, 256), channel.id);
   if (body.position !== undefined) run('UPDATE channels SET position = ? WHERE id = ?', Number(body.position) | 0, channel.id);
+  if (body.parentId !== undefined && channel.type !== 'category') {
+    run('UPDATE channels SET parent_id = ? WHERE id = ?', checkParent(channel.server_id, body.parentId), channel.id);
+  }
+  if (body.pendingReview === false && channel.pending_review) {
+    run('UPDATE channels SET pending_review = 0 WHERE id = ?', channel.id);
+    permsChanged(channel.server_id);
+    audit(channel.server_id, user.id, 'channel.open', { type: 'channel', id: channel.id, name: channel.name });
+  }
   if (body.slowmode !== undefined) run('UPDATE channels SET slowmode = ? WHERE id = ?', Math.max(0, Math.min(21600, Number(body.slowmode) | 0)), channel.id);
   if (body.ageRating !== undefined) {
     run('UPDATE channels SET age_rating = ? WHERE id = ?', [0, 18, 21].includes(Number(body.ageRating)) ? Number(body.ageRating) : 0, channel.id);
@@ -688,14 +698,44 @@ route('DELETE', '/api/channels/:id', ({ user, params }) => {
     files: vault.attachmentsOf(msgs),
   });
   run('DELETE FROM channels WHERE id = ?', channel.id);
+  // Channels inside a deleted category stay, just uncategorized.
+  if (channel.type === 'category') {
+    for (const c of all('SELECT * FROM channels WHERE parent_id = ?', channel.id)) {
+      run('UPDATE channels SET parent_id = NULL WHERE id = ?', c.id);
+      bus.publish(`server:${channel.server_id}`, { t: 'CHANNEL_UPDATE', d: ser.channel({ ...c, parent_id: null }) });
+    }
+  }
   deleteChannelFiles(channel.id);
   purgeLog();
   bus.publish(`server:${channel.server_id}`, { t: 'CHANNEL_DELETE', d: { id: channel.id, serverId: channel.server_id } });
 });
 
+// Opens up imported channels that were waiting for review (all, or a list).
+route('POST', '/api/servers/:id/channels/open', ({ user, params, body }) => {
+  requireServerPerm(params.id, user.id, P.ADMINISTRATOR);
+  const ids = Array.isArray(body.channelIds) ? body.channelIds.map(String) : null;
+  const rows = all('SELECT * FROM channels WHERE server_id = ? AND pending_review = 1', params.id).filter((c) => !ids || ids.includes(c.id));
+  for (const c of rows) {
+    run('UPDATE channels SET pending_review = 0 WHERE id = ?', c.id);
+    bus.publish(`server:${params.id}`, { t: 'CHANNEL_UPDATE', d: ser.channel({ ...c, pending_review: 0 }) });
+  }
+  if (rows.length) {
+    permsChanged(params.id);
+    audit(params.id, user.id, 'channel.open', { type: 'server', id: params.id, name: `${rows.length} imported channels` });
+  }
+  return { opened: rows.length };
+});
+
+function checkParent(serverId, parentId) {
+  if (!parentId) return null;
+  const cat = one(`SELECT id FROM channels WHERE id = ? AND server_id = ? AND type = 'category'`, String(parentId), serverId);
+  if (!cat) throw new HttpError(400, 'That category doesn\u2019t exist.');
+  return cat.id;
+}
+
 // ---------- direct messages ----------
 route('POST', '/api/dms', ({ user, body }) => {
-  const other = one('SELECT * FROM users WHERE username = ?', String(body.username || ''));
+  const other = one('SELECT * FROM users WHERE username = ? AND is_system = 0', String(body.username || ''));
   if (!other) throw new HttpError(404, 'No user with that username.');
   if (other.id === user.id) throw new HttpError(400, 'You cannot DM yourself.');
   const existing = one(
@@ -729,7 +769,7 @@ route('GET', '/api/channels/:id/messages', ({ user, params, query }) => {
 
 route('POST', '/api/channels/:id/messages', ({ user, params, body }) => {
   const { channel, perms } = channelAccess(params.id, user.id, P.SEND_MESSAGES);
-  if (channel.type === 'voice') throw new HttpError(400, 'Cannot post in a voice channel.');
+  if (channel.type === 'voice' || channel.type === 'category') throw new HttpError(400, 'You can\u2019t post in that channel.');
   const content = typeof body.content === 'string' ? body.content.trim() : '';
   if (content.length > config.maxMessageLength) throw new HttpError(400, 'Message is too long.');
   const attachments = Array.isArray(body.attachments) ? body.attachments.slice(0, 10) : [];
@@ -1187,7 +1227,7 @@ route('POST', '/api/reports', ({ user, body }) => {
     const m = one('SELECT * FROM messages WHERE id = ?', String(body.targetId));
     if (!m) throw new HttpError(404, 'Message not found.');
     const { channel } = channelAccess(m.channel_id, user.id);
-    serverId = channel.server_id; channelId = channel.id; targetUserId = m.author_id;
+    serverId = channel.server_id; channelId = channel.id; targetUserId = m.import_source ? null : m.author_id;
     evidence = { message: messageSnapshot([m])[0], channel: channel.type === 'dm' ? 'direct message' : `#${channel.name}` };
     files = vault.attachmentsOf([m]);
   } else if (targetType === 'user') {
@@ -1343,6 +1383,7 @@ route('POST', '/api/admin/reports/:rid/resolve', ({ user, params, body }) => {
 });
 
 function suspendUser(userId, reason) {
+  if (one('SELECT 1 FROM users WHERE id = ? AND is_system = 1', userId)) throw new HttpError(400, 'That\u2019s a system account.');
   run('UPDATE users SET suspended_at = ?, suspended_reason = ? WHERE id = ?', Date.now(), String(reason || '').slice(0, 300), userId);
   auth.revokeAllSessions(userId);
   bus.publish(`user:${userId}`, { t: 'SESSIONS_REVOKED', d: {} });
@@ -1353,8 +1394,8 @@ route('GET', '/api/admin/users', ({ user, query }) => {
   const q = String(query.get('q') || '').trim().slice(0, 64);
   vault.logAccess(user.id, 'users.search', null, q);
   const rows = q
-    ? all(`SELECT * FROM users WHERE username LIKE ? ESCAPE '\\' OR id = ? ORDER BY username LIMIT 50`, `%${q.replace(/[%_\\]/g, (c) => '\\' + c)}%`, q)
-    : all('SELECT * FROM users ORDER BY created_at DESC LIMIT 50');
+    ? all(`SELECT * FROM users WHERE is_system = 0 AND (username LIKE ? ESCAPE '\\' OR id = ?) ORDER BY username LIMIT 50`, `%${q.replace(/[%_\\]/g, (c) => '\\' + c)}%`, q)
+    : all('SELECT * FROM users WHERE is_system = 0 ORDER BY created_at DESC LIMIT 50');
   return rows.map((u) => ({
     id: u.id, username: u.username, displayName: u.display_name, createdAt: u.created_at, isAdmin: !!u.is_admin,
     suspendedAt: u.suspended_at, suspendedReason: u.suspended_reason, hasEmail: !!u.email_enc, emailVerified: !!u.email_verified_at,
@@ -1450,5 +1491,27 @@ route('POST', '/api/admin/users/:id/admin', ({ user, params, body }) => {
   run('UPDATE users SET is_admin = ? WHERE id = ?', body.isAdmin ? 1 : 0, params.id);
   vault.logAccess(user.id, body.isAdmin ? 'admin.grant' : 'admin.revoke', params.id);
 });
+
+// ---------- Discord import (see importer.js) ----------
+// The bot token is sent with each wizard step and only kept in memory.
+const importer = require('./importer');
+route('POST', '/api/imports/discord/inspect', async ({ user, body }) => {
+  auth.hit(`import:${user.id}`, 60, 3600 * 1000);
+  return importer.inspectToken(body.token);
+});
+route('POST', '/api/imports/discord/preview', async ({ user, body }) => {
+  auth.hit(`import:${user.id}`, 60, 3600 * 1000);
+  return importer.preview(body.token, body.guildId);
+});
+route('POST', '/api/imports/discord', async ({ user, body }) => {
+  auth.hit(`import-start:${user.id}`, 10, 3600 * 1000);
+  return importer.start(user.id, body.token, body.options, body.accepted === true);
+});
+route('GET', '/api/imports', ({ user }) => importer.listJobs(user.id));
+route('POST', '/api/imports/:id/resume', async ({ user, params, body }) => {
+  auth.hit(`import-start:${user.id}`, 10, 3600 * 1000);
+  return importer.resume(user.id, params.id, body.token);
+});
+route('POST', '/api/imports/:id/cancel', ({ user, params }) => importer.cancel(user.id, params.id));
 
 module.exports = { handle, serveUpload, channelAccess, state, cookie, sameOrigin };
