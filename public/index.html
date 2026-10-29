@@ -23,12 +23,15 @@
       <p id="auth-invite" class="muted hidden"></p>
       <label>Username<input id="auth-username" autocomplete="username" required></label>
       <label id="auth-display-wrap" class="hidden">Display name<input id="auth-display" autocomplete="nickname"></label>
+      <label id="auth-email-wrap" class="hidden">Email<input id="auth-email" type="email" autocomplete="email" maxlength="254"></label>
+      <label id="auth-dob-wrap" class="hidden">Date of birth<input id="auth-dob" type="date"></label>
+      <p id="auth-dob-hint" class="muted small hidden">Used only to confirm your age. You can't change it later, so enter it carefully. Your email is used only to verify you and recover your account.</p>
       <label>Password<input id="auth-password" type="password" autocomplete="current-password" required maxlength="256"></label>
       <p id="auth-password-hint" class="muted small hidden">At least 12 characters. A few random words make a strong, easy-to-remember password.</p>
-      <label id="auth-terms-wrap" class="check hidden"><input id="auth-terms" type="checkbox"> I am at least 13 years old and agree to the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</label>
+      <label id="auth-terms-wrap" class="check hidden"><input id="auth-terms" type="checkbox"> I agree to the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</label>
       <p id="auth-error" class="error"></p>
       <button type="submit" class="btn primary" id="auth-submit">Log in</button>
-      <p class="muted small"><a href="#" id="auth-toggle">Need an account? Register</a></p>
+      <p class="muted small"><a href="#" id="auth-toggle">Need an account? Register</a> <span id="auth-forgot-wrap">· <a href="#" id="auth-forgot">Forgot password?</a></span></p>
       <p class="muted small"><a href="/privacy.html" target="_blank">Privacy</a> · <a href="/terms.html" target="_blank">Terms</a></p>
     </form>
   </section>

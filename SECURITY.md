@@ -25,12 +25,35 @@ Hearth follows the same published standards large services use: the **OWASP** Pa
 - **File access:** uploads are only served to logged-in people who can see that channel.
 - **Clickjacking / sniffing:** `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`; HSTS when on HTTPS.
 
-## Deleting data
-- **Messages, channels, servers and accounts are deleted permanently**, including their uploaded files on disk. Every deletion that loses data shows a "this is permanent" warning, and servers/channels/accounts require typing an exact phrase (accounts also require the password).
-- The database runs with **secure delete**, so deleted rows are overwritten with zeros, and the write-ahead log is flushed after deletions. Deleted text can't be recovered from the database file (verified by the test suite).
-- **No backups** are kept. If backups are added later, the Privacy Policy must say how long they last.
-- Uploads never attached to a message are removed after 24 hours. System logs are kept for 30 days.
-- Account owners must delete or transfer servers they own before deleting their account.
+## Deleting data and retention
+- **Messages, channels, servers and accounts are removed from Hearth immediately** (including files on disk) and can't be restored by the user. Every deletion shows a warning; servers, channels and accounts require typing an exact phrase (accounts also need the password).
+- **Retention vault:** before anything is deleted, an encrypted copy (AES-256-GCM, its own key) is stored for **30 days** (`VAULT_DAYS`), then erased automatically. Earlier versions of edited messages are kept the same way. This lets illegal activity be investigated after the fact.
+- **Report evidence** is preserved for **1 year**, matching the US preservation requirement for child-safety reports (18 U.S.C. 2258A as amended by the REPORT Act of 2024).
+- **Legal holds** (admin panel) stop erasure for a user or server until released, for preservation requests (e.g. 18 U.S.C. 2703(f)) or expected litigation.
+- Only Hearth platform admins can open the vault; they must give a reason, and every access is recorded in the admin log.
+- The live database runs with **secure delete** and flushes its write-ahead log, so deleted plaintext doesn't linger in the database file (verified by the test suite).
+- Uploads never attached are removed after 24 hours; moderation logs after 90 days; system logs after 30 days.
+
+## Email and account recovery
+- Sign-up requires an email address, stored **encrypted** with a keyed hash for lookups.
+- Verification, password-reset and email-change codes are single-use, short-lived (20 to 30 minutes), limited to 5 guesses, and stored only as hashes.
+- "Forgot password" gives the same answer whether or not an account exists, so it can't be used to discover accounts.
+- **Backup recovery codes** (10, single-use, stored hashed) let people reset without email.
+- Password resets sign out every device and send a security notice. Email changes notify the old address.
+- Email is sent over SMTP with TLS required (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`).
+
+## Age checks
+- Date of birth is required at sign-up (under-13s refused), stored **encrypted**, and can be set only once by the user (admins can reset it).
+- Channels and servers can be rated **18+** or **21+**. They're hidden from anyone too young, enforced on the server for messages, files, live events and voice, not just in the app.
+- This is self-declared age. Some US states require ID-based age verification for sites with substantial adult content; get legal advice before allowing 18+ content publicly.
+
+## Moderation and reporting
+- Role hierarchy: moderators can only act on members and roles below their own highest role, and can't grant permissions they don't have.
+- Per-channel permission overrides (private and read-only channels) are enforced by the server, including live events, so hidden channels stay hidden.
+- Timeouts, slowmode, bans, and a 90-day audit log of moderator actions.
+- Reports: server moderators see their server's reports; child-safety reports, DM reports and whole-server reports go only to Hearth admins. Reporters are anonymous to the reported person.
+- Platform admins can suspend accounts (sessions revoked immediately), delete servers, and record NCMEC CyberTipline report numbers.
+- Blocking hides a person's messages and stops them sending you direct messages.
 
 ## Your data
 - **Download my data** gives a JSON copy of everything stored about you (no password hash).
@@ -43,6 +66,8 @@ Hearth follows the same published standards large services use: the **OWASP** Pa
 
 ## Not done yet
 - **HTTPS is required before real use.** Over plain `http://`, passwords travel unencrypted. Use only throwaway test passwords until HTTPS is on.
+- **Email sending needs a provider** (and a domain with SPF/DKIM). Until `SMTP_*` is configured, verification and reset codes can't be delivered.
 - Two-factor authentication (authenticator app codes).
-- Password reset by email (needs an email sender).
+- The master encryption key lives on the same server as the database; it protects copied database files, not a fully compromised server.
+- Automated CSAM hash-matching (e.g. PhotoDNA) requires applying to the provider; reports are currently reviewed by people.
 - Rate limits are per server node; a multi-node setup should share them.

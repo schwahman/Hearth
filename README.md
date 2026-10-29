@@ -92,6 +92,9 @@ All optional, set as environment variables.
 | `NODE_ID` | `0` | Unique number per node when running several (0–1023) |
 | `BUS_HUB` | | `host:port` of the event hub when running several nodes |
 
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | | Email provider for verification and password resets (TLS required) |
+| `VAULT_DAYS` | `30` | How long encrypted copies of deleted content are kept |
+| `MAIL_DEV` | `false` | Testing only: print emails to the log instead of sending |
 | `TRUST_PROXY` | `false` | Set `true` only behind your own reverse proxy, so rate limits see real visitor addresses |
 
 Security details are in [SECURITY.md](SECURITY.md).

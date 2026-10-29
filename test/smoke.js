@@ -12,11 +12,37 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-test-'));
 
 const srv = spawn(process.execPath, ['--no-warnings', path.join(__dirname, '..', 'server', 'index.js')], {
-  env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir },
+  env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, MAIL_DEV: 'true', RATE_LIMIT_SCALE: '20' },
   stdio: ['ignore', 'pipe', 'inherit'],
 });
 
+// Emails the server "sent" (MAIL_DEV prints them to its output).
+const mail = [];
+let outBuf = '';
+srv.stdout.on('data', (d) => {
+  outBuf += d.toString();
+  let i;
+  while ((i = outBuf.indexOf('[mail:dev]')) >= 0) {
+    const next = outBuf.indexOf('[mail:dev]', i + 1);
+    const end = next >= 0 ? next : (outBuf.includes('\n\n', i) && outBuf.length - i > 200 ? outBuf.length : -1);
+    if (end < 0) break;
+    mail.push(outBuf.slice(i, end));
+    outBuf = outBuf.slice(end);
+  }
+});
+async function lastCodeFor(to, pattern) {
+  for (let t = 0; t < 50; t++) {
+    const all = [...mail, outBuf].filter((m) => m.includes(`to=${to}`));
+    const m = all.length && all[all.length - 1].match(pattern);
+    if (m) return m[1];
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error('no email for ' + to);
+}
+
 async function req(method, p, body, token, extra = {}) {
+  if (p === '/auth/register' && body && body.username && body.email === undefined) body = { ...body, email: `${body.username}@test.example` };
+  if (p === '/auth/register' && body && body.username && body.birthdate === undefined) body = { ...body, birthdate: '1990-01-01' };
   const res = await fetch(BASE + '/api' + p, {
     method,
     headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}), ...extra.headers },
@@ -305,6 +331,156 @@ async function main() {
   ok('server deletion removes its uploaded files from disk');
   ca2.ws.close();
 
+
+  // ---------------- email recovery ----------------
+  const FPW = 'harvest lantern pickle 8';
+  const fr = await req('POST', '/auth/register', { acceptTerms: true, username: 'frank', email: 'Frank@Test.Example', password: FPW, returnToken: true });
+  const F = fr.data.token;
+  assert.equal((await req('POST', '/auth/register', { acceptTerms: true, username: 'frank2', email: 'frank@test.example', password: FPW })).status, 409);
+  const vcode = await lastCodeFor('frank@test.example', /verification code is:\s+(\d{6})/);
+  assert.equal((await req('POST', '/users/@me/email/verify', { code: '000000' }, F)).status, 400);
+  assert.equal((await req('POST', '/users/@me/email/verify', { code: vcode }, F)).data.emailVerified, true);
+  {
+    const dbr3 = new DatabaseSync(path.join(dataDir, 'hearth.db'), { readOnly: true });
+    const row = dbr3.prepare("SELECT email_enc, email_hash FROM users WHERE username = 'frank'").get();
+    dbr3.close();
+    assert.ok(!row.email_enc.includes('frank') && /^[0-9a-f]{64}$/.test(row.email_hash));
+  }
+  ok('sign-up email verified with a code; stored encrypted; duplicates refused');
+
+  const g1 = await req('POST', '/auth/forgot', { identifier: 'nobody@nowhere.example' });
+  const g2 = await req('POST', '/auth/forgot', { identifier: 'frank@test.example' });
+  assert.equal(g1.status, 200); assert.equal(JSON.stringify(g1.data), JSON.stringify(g2.data));
+  const rcode = await lastCodeFor('frank@test.example', /reset code is:\s+([A-Z0-9]{8})/);
+  assert.equal((await req('POST', '/auth/reset', { identifier: 'frank', code: 'WRONGCOD', newPassword: 'brand new phrase 77' })).status, 400);
+  assert.equal((await req('POST', '/auth/reset', { identifier: 'frank@test.example', code: rcode, newPassword: 'brand new phrase 77' })).status, 200);
+  assert.equal((await req('GET', '/users/@me', null, F)).status, 401);
+  assert.equal((await req('POST', '/auth/reset', { identifier: 'frank', code: rcode, newPassword: 'another phrase here 1' })).status, 400);
+  ok('forgot password: same answer for unknown accounts, emailed code works once, old sessions signed out');
+
+  const F2 = (await req('POST', '/auth/login', { username: 'frank', password: 'brand new phrase 77', returnToken: true })).data.token;
+  const rc = (await req('POST', '/users/@me/recovery-codes', { password: 'brand new phrase 77' }, F2)).data.codes;
+  assert.equal(rc.length, 10);
+  assert.equal((await req('POST', '/auth/reset', { identifier: 'frank', recoveryCode: rc[0].toLowerCase(), newPassword: 'third phrase for him' })).status, 200);
+  assert.equal((await req('POST', '/auth/reset', { identifier: 'frank', recoveryCode: rc[0], newPassword: 'fourth phrase for him' })).status, 400);
+  ok('backup recovery codes reset the password, each only once');
+
+  // ---------------- moderation ----------------
+  const OW = A2;
+  const M = (await req('POST', '/auth/register', { acceptTerms: true, username: 'moddy', password: 'moderator phrase 123', returnToken: true })).data.token;
+  const U = (await req('POST', '/auth/register', { acceptTerms: true, username: 'member1', password: 'member phrase 456 ok', returnToken: true })).data.token;
+  const modId = (await req('GET', '/users/@me', null, M)).data.id;
+  const memId = (await req('GET', '/users/@me', null, U)).data.id;
+  const ms = (await req('POST', '/servers', { name: 'Mod Test' }, OW)).data;
+  const msGen = ms.channels.find((c) => c.type === 'text');
+  const msInv = (await req('POST', `/servers/${ms.id}/invites`, {}, OW)).data;
+  await req('POST', `/invites/${msInv.code}`, null, M);
+  await req('POST', `/invites/${msInv.code}`, null, U);
+  const MODP = (1 << 4) | (1 << 5) | (1 << 6) | (1 << 9) | (1 << 14) | (1 << 15) | 1 | 2;
+  const modRole = (await req('POST', `/servers/${ms.id}/roles`, { name: 'Mod', permissions: MODP }, OW)).data;
+  assert.equal((await req('PUT', `/servers/${ms.id}/members/${modId}/roles/${modRole.id}`, null, OW)).status, 200);
+  assert.equal((await req('POST', `/servers/${ms.id}/roles`, { name: 'x', permissions: 1 << 30 }, M)).status, 403);
+  const helper = (await req('POST', `/servers/${ms.id}/roles`, { name: 'Helper', permissions: 0 }, M)).data;
+  assert.equal((await req('PATCH', `/roles/${modRole.id}`, { name: 'Boss' }, M)).status, 403);
+  assert.equal((await req('PUT', `/servers/${ms.id}/members/${memId}/roles/${helper.id}`, null, M)).status, 200);
+  const ownerId = (await req('GET', '/users/@me', null, OW)).data.id;
+  assert.equal((await req('DELETE', `/servers/${ms.id}/members/${ownerId}`, {}, M)).status, 403);
+  ok('role hierarchy: mods manage only roles and members below them');
+
+  const staff = (await req('POST', `/servers/${ms.id}/channels`, { name: 'staff' }, OW)).data;
+  const everyone = (await req('GET', `/servers/${ms.id}`, null, OW)).data.roles.find((r) => r.isDefault);
+  await req('PUT', `/channels/${staff.id}/overrides/role/${everyone.id}`, { allow: 0, deny: 1 }, OW);
+  await req('PUT', `/channels/${staff.id}/overrides/role/${modRole.id}`, { allow: 1, deny: 0 }, OW);
+  assert.equal((await req('GET', `/channels/${staff.id}/messages`, null, U)).status, 404);
+  assert.equal((await req('GET', `/channels/${staff.id}/messages`, null, M)).status, 200);
+  assert.ok(!(await req('GET', `/servers/${ms.id}`, null, U)).data.channels.some((c) => c.id === staff.id));
+  const cu = client(U); await cu.wait('READY');
+  await req('POST', `/channels/${staff.id}/messages`, { content: 'secret staff talk' }, M);
+  await req('POST', `/channels/${msGen.id}/messages`, { content: 'public hello' }, M);
+  await cu.wait('MESSAGE_CREATE', (d) => d.content === 'public hello');
+  assert.ok(!cu.events.some((e) => e.t === 'MESSAGE_CREATE' && e.d.content === 'secret staff talk'));
+  ok('private channels: hidden from the list, the API and live events');
+
+  assert.equal((await req('PUT', `/servers/${ms.id}/members/${memId}/timeout`, { minutes: 10, reason: 'cool off' }, M)).status, 200);
+  assert.equal((await req('POST', `/channels/${msGen.id}/messages`, { content: 'can I talk?' }, U)).status, 403);
+  await req('PUT', `/servers/${ms.id}/members/${memId}/timeout`, { minutes: 0 }, M);
+  assert.equal((await req('POST', `/channels/${msGen.id}/messages`, { content: 'back' }, U)).status, 200);
+  await req('PATCH', `/channels/${msGen.id}`, { slowmode: 30 }, M);
+  assert.equal((await req('POST', `/channels/${msGen.id}/messages`, { content: 'again' }, U)).status, 429);
+  const auditLog = (await req('GET', `/servers/${ms.id}/audit-log`, null, M)).data;
+  assert.ok(auditLog.some((a) => a.action === 'member.timeout') && auditLog.some((a) => a.action === 'channel.permissions'));
+  assert.equal((await req('GET', `/servers/${ms.id}/audit-log`, null, U)).status, 403);
+  ok('timeouts, slowmode, and audit log');
+
+  // ---------------- reports, blocks, admin ----------------
+  const modMsg = (await req('POST', `/channels/${msGen.id}/messages`, { content: 'mean words here' }, M)).data;
+  assert.equal((await req('POST', '/reports', { targetType: 'message', targetId: modMsg.id, category: 'harassment', details: 'rude' }, U)).data.sentTo[0], 'server');
+  const queue = (await req('GET', `/servers/${ms.id}/reports`, null, M)).data;
+  assert.equal(queue.length, 1); assert.equal(queue[0].evidence.message.content, 'mean words here');
+  const csam = (await req('POST', '/reports', { targetType: 'message', targetId: modMsg.id, category: 'child_safety' }, U)).data;
+  assert.deepEqual(csam.sentTo, ['platform']);
+  assert.equal((await req('GET', `/servers/${ms.id}/reports`, null, M)).data.length, 1);
+  assert.equal((await req('GET', '/admin/reports', null, U)).status, 404);
+  const adminQ = (await req('GET', '/admin/reports', null, OW)).data;
+  assert.ok(adminQ.some((r) => r.category === 'child_safety' && r.evidence.message.content === 'mean words here'));
+  ok('reports: server mods see server reports; child-safety reports go only to Hearth admins');
+
+  await req('POST', `/servers/${ms.id}/reports/${queue[0].id}/resolve`, { action: 'delete_message', note: 'removed' }, OW);
+  assert.ok(!(await req('GET', `/channels/${msGen.id}/messages`, null, U)).data.some((m) => m.id === modMsg.id));
+  const adminQ2 = (await req('GET', '/admin/reports', null, OW)).data;
+  assert.equal(adminQ2.find((r) => r.category === 'child_safety').evidence.message.content, 'mean words here');
+  ok('reported content stays preserved as evidence after it is deleted');
+
+  await req('PUT', `/users/@me/blocks/${ownerId}`, null, U);
+  const member1 = 'member1';
+  assert.equal((await req('POST', '/dms', { username: member1 }, OW)).status, 403);
+  ok('blocking stops direct messages');
+
+  const vlist = (await req('GET', `/admin/vault?user=${daveId}`, null, OW)).data;
+  const acct = vlist.find((v) => v.kind === 'account');
+  assert.ok(acct);
+  assert.equal((await req('POST', `/admin/vault/${acct.id}/open`, {}, OW)).status, 400);
+  const opened = (await req('POST', `/admin/vault/${acct.id}/open`, { reason: 'test investigation' }, OW)).data;
+  assert.ok(opened.data.messages.some((m) => m.content === 'hi from dave'));
+  assert.equal(opened.data.account.email, 'dave@test.example');
+  await req('POST', '/admin/holds', { targetType: 'user', targetId: daveId, reason: 'Preservation request #123' }, OW);
+  assert.equal((await req('GET', '/admin/holds', null, OW)).data[0].targetId, daveId);
+  const alog = (await req('GET', '/admin/log', null, OW)).data;
+  assert.ok(alog.some((l) => l.action === 'vault.open' && l.detail === 'test investigation'));
+  ok('deleted accounts kept encrypted in the vault; admin access needs a reason and is logged; legal holds');
+
+  await req('POST', `/admin/users/${memId}/suspend`, { reason: 'test' }, OW);
+  assert.equal((await req('GET', '/users/@me', null, U)).status, 401);
+  assert.equal((await req('POST', '/auth/login', { username: 'member1', password: 'member phrase 456 ok' })).status, 403);
+  await req('POST', `/admin/users/${memId}/unsuspend`, null, OW);
+  assert.equal((await req('POST', '/auth/login', { username: 'member1', password: 'member phrase 456 ok' })).status, 200);
+  ok('Hearth admins can suspend and restore accounts');
+
+  // ---------------- age-restricted channels & commands ----------------
+  assert.equal((await req('POST', '/auth/register', { acceptTerms: true, username: 'tiny', password: 'little kid phrase 1', birthdate: '2020-05-05' })).status, 400);
+  const T = (await req('POST', '/auth/register', { acceptTerms: true, username: 'teen1', password: 'teenager phrase 22', birthdate: '2011-03-03', returnToken: true })).data.token;
+  await req('POST', `/invites/${msInv.code}`, null, T);
+  const adultCh = (await req('POST', `/servers/${ms.id}/channels`, { name: 'after dark' }, OW)).data;
+  await req('PATCH', `/channels/${adultCh.id}`, { ageRating: 18 }, OW);
+  const teenView = await req('GET', `/channels/${adultCh.id}/messages`, null, T);
+  assert.equal(teenView.status, 403); assert.equal(teenView.data.code, 'age_restricted');
+  assert.ok(!(await req('GET', `/servers/${ms.id}`, null, T)).data.channels.some((c) => c.id === adultCh.id));
+  assert.equal((await req('GET', `/channels/${adultCh.id}/messages`, null, M)).status, 200);
+  assert.equal((await req('POST', '/users/@me/birthdate', { date: '1980-01-01' }, T)).status, 409);
+  await req('PATCH', `/channels/${adultCh.id}`, { ageRating: 21 }, OW);
+  const me21 = (await req('GET', '/users/@me', null, M)).data;
+  assert.equal(me21.over21, true);
+  ok('age gates: under-13 sign-ups refused; 18+/21+ channels hidden from minors; birth date set once');
+
+  const roll = (await req('POST', `/channels/${msGen.id}/roll`, { dice: '2d6+1' }, OW)).data;
+  assert.equal(roll.kind, 'roll'); assert.match(roll.content, /^rolled 2d6\+1: \*\*\d+\*\*/);
+  const meMsg = (await req('POST', `/channels/${msGen.id}/messages`, { content: 'waves', kind: 'me' }, OW)).data;
+  assert.equal(meMsg.kind, 'me');
+  const purged = (await req('POST', `/channels/${msGen.id}/purge`, { count: 3 }, M)).data;
+  assert.equal(purged.deleted, 3);
+  assert.equal((await req('POST', `/channels/${msGen.id}/purge`, { count: 3 }, T)).status, 403);
+  ok('slash command actions: server-side dice and coin, /me, moderator purge');
+  cu.ws.close();
   ca.ws.close(); cb.ws.close();
   console.log(`\nAll ${passed} checks passed.`);
 }

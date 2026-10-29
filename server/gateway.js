@@ -8,7 +8,7 @@
 const config = require('./config');
 const { one, all } = require('./db');
 const { randomCode } = require('./ids');
-const { P, has, memberPermissions } = require('./permissions');
+const { P, has, channelPermissions } = require('./permissions');
 const auth = require('./auth');
 const bus = require('./bus');
 const state = require('./state');
@@ -38,6 +38,30 @@ bus.on('event', (topic, ev) => {
   for (const s of [...set]) {
     // Events addressed to one specific session (voice signaling).
     if (ev.toSession && ev.toSession !== s.id) continue;
+    // Roles or channel permissions changed: forget cached access and tell
+    // the client to reload that server's channel list.
+    if (ev.t === 'PERMS_CHANGED') {
+      s.viewCache.clear();
+      if (s.voice && s.voice.serverId === ev.d.serverId && !canView(s, s.voice.channelId)) {
+        leaveVoice(s);
+        s.ws.sendJSON({ t: 'VOICE_FORCE_LEAVE', d: { reason: 'You no longer have access to that channel.' } });
+      }
+      s.ws.sendJSON({ t: 'SERVER_REFRESH', d: { id: ev.d.serverId } });
+      continue;
+    }
+    if (ev.t === 'VOICE_FORCE_LEAVE_SERVER') {
+      if (s.voice && s.voice.serverId === ev.d.serverId) {
+        leaveVoice(s);
+        s.ws.sendJSON({ t: 'VOICE_FORCE_LEAVE', d: { reason: ev.d.reason } });
+      }
+      continue;
+    }
+    // Server-wide events about a specific channel only go to people who can
+    // see that channel (private channels stay private).
+    if (topic.startsWith('server:')) {
+      const cid = channelOf(ev);
+      if (cid && !canView(s, cid)) continue;
+    }
     // Password changed or devices signed out: drop connections whose login
     // is no longer valid.
     if (ev.t === 'SESSIONS_REVOKED') {
@@ -61,13 +85,35 @@ bus.on('event', (topic, ev) => {
   }
 });
 
+function channelOf(ev) {
+  switch (ev.t) {
+    case 'MESSAGE_CREATE': case 'MESSAGE_UPDATE': case 'MESSAGE_DELETE':
+    case 'REACTION_ADD': case 'REACTION_REMOVE': case 'TYPING_START':
+      return ev.d.channelId;
+    case 'CHANNEL_CREATE': case 'CHANNEL_UPDATE':
+      return ev.d.id;
+    case 'VOICE_STATE_UPDATE':
+      return ev.d.channelId || ev.d.previousChannelId;
+    default:
+      return null;
+  }
+}
+
+function canView(s, channelId) {
+  if (s.viewCache.has(channelId)) return s.viewCache.get(channelId);
+  const c = one('SELECT * FROM channels WHERE id = ?', channelId);
+  const ok = !!c && (c.type === 'dm' || has(channelPermissions(c, s.user.id), P.VIEW_CHANNELS));
+  s.viewCache.set(channelId, ok);
+  return ok;
+}
+
 function onConnection(ws, req) {
   // Refuse WebSocket connections opened by other websites (cross-site
   // WebSocket hijacking). Browsers always send Origin on WebSocket requests.
   const origin = sameOrigin(req);
   if (origin === false) return ws.close(4003, 'bad origin');
   const cookieToken = cookie(req, 'hearth_token');
-  const session = { id: randomCode(9), ws, user: null, token: null, topics: new Set(), voice: null, lastTyping: 0 };
+  const session = { id: randomCode(9), ws, user: null, token: null, topics: new Set(), voice: null, lastTyping: 0, viewCache: new Map() };
   const identifyTimer = setTimeout(() => ws.close(4001, 'identify timeout'), 10000);
 
   ws.on('message', (raw) => {
@@ -106,17 +152,20 @@ function ready(session) {
   for (const id of serverIds) subscribe(session, `server:${id}`);
   const dmIds = all('SELECT channel_id FROM dm_recipients WHERE user_id = ?', u.id).map((r) => r.channel_id);
   for (const id of dmIds) subscribe(session, `channel:${id}`);
+  const isAdmin = !!one('SELECT 1 FROM users WHERE id = ? AND is_admin = 1', u.id);
+  if (isAdmin) subscribe(session, 'admins');
 
   setPresence(session, true); // before building READY so we show as online
   session.ws.sendJSON({
     t: 'READY',
     d: {
       sessionId: session.id,
-      user: ser.user(one('SELECT * FROM users WHERE id = ?', u.id)),
-      servers: serverIds.map(ser.server),
+      user: ser.me(u.id),
+      servers: serverIds.map((id) => ser.server(id, u.id)),
       dms: dmIds.map(ser.dmChannel),
       dmVoiceStates: dmIds.flatMap(state.voiceStatesForChannel),
       iceServers: config.iceServers,
+      blocked: all('SELECT blocked_id FROM blocks WHERE user_id = ?', u.id).map((r) => r.blocked_id),
     },
   });
 }
@@ -156,7 +205,8 @@ function handleOp(session, msg) {
     case 'VOICE_STATE': {
       if (!session.voice) return;
       const v = session.voice;
-      const perms = v.serverId ? memberPermissions(v.serverId, session.user.id) : -1;
+      const ch = v.serverId ? one('SELECT * FROM channels WHERE id = ?', v.channelId) : null;
+      const perms = ch ? channelPermissions(ch, session.user.id) : -1;
       if (typeof msg.mute === 'boolean') v.mute = msg.mute || !has(perms, P.SPEAK);
       if (typeof msg.deaf === 'boolean') v.deaf = msg.deaf;
       if (typeof msg.video === 'boolean') v.video = msg.video && has(perms, P.VIDEO);

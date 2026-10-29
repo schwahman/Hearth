@@ -350,3 +350,24 @@ code, pre, .msg .time { font-family: var(--mono); }
 .seg button { flex: 1; background: none; border: 0; padding: 8px 6px; cursor: pointer; color: var(--muted); font-size: 13px; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.on { background: var(--accent-wash); color: var(--accent); }
+
+/* ---------- safety, moderation, commands ---------- */
+.age-badge { font-family: var(--mono); font-size: 10px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--accent-2); color: var(--accent-2); }
+.action-msg { margin-top: 6px; }
+.action-msg .body { color: var(--muted); }
+.action-msg .body strong { color: var(--text); }
+.action-icon { font-size: 16px; color: var(--accent-2); }
+.blocked-msg { padding-top: 4px; padding-bottom: 4px; }
+.choice button.picked { border-color: var(--accent); background: var(--accent-wash); }
+.report-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; display: grid; gap: 8px; background: var(--bg-1); }
+.report-card + .report-card { margin-top: 10px; }
+.report-card.urgent { border-color: var(--danger); }
+.evidence { border-left: 3px solid var(--line); padding: 4px 10px; background: var(--bg-0); white-space: pre-wrap; overflow-wrap: anywhere; }
+.rail-btn.admin { background: var(--bg-2); color: var(--accent-2); font-size: 22px; }
+.cmd-menu { position: absolute; left: 16px; right: 16px; bottom: calc(100% - 8px); background: var(--bg-1); border: 1px solid var(--line);
+  border-radius: var(--radius); max-height: 300px; overflow-y: auto; z-index: 20; box-shadow: 0 -6px 20px rgba(0,0,0,.3); }
+.composer { position: relative; }
+.cmd { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; cursor: pointer; }
+.cmd.on, .cmd:hover { background: var(--accent-wash); }
+.cmd-name { font-family: var(--mono); color: var(--accent); }
+#account-banner { background: var(--amber-wash); }

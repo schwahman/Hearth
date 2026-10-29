@@ -2,16 +2,22 @@
 'use strict';
 const { one, all } = require('./db');
 const state = require('./state');
+const { channelPermissions, memberPermissions, ageBlock, ageOf, P } = require('./permissions');
 
 function user(row) {
   return { id: row.id, username: row.username, displayName: row.display_name, avatar: row.avatar || null };
 }
 
 function channel(row) {
-  return {
+  const c = {
     id: row.id, serverId: row.server_id, name: row.name, type: row.type,
-    topic: row.topic || '', position: row.position,
+    topic: row.topic || '', position: row.position, slowmode: row.slowmode || 0, ageRating: row.age_rating || 0,
   };
+  if (row.server_id) {
+    c.overrides = all('SELECT target_type, target_id, allow, deny FROM channel_overrides WHERE channel_id = ?', row.id)
+      .map((o) => ({ type: o.target_type, id: o.target_id, allow: o.allow, deny: o.deny }));
+  }
+  return c;
 }
 
 function role(row) {
@@ -23,7 +29,7 @@ function role(row) {
 
 function member(serverId, userId) {
   const row = one(
-    `SELECT u.id, u.username, u.display_name, u.avatar, m.nickname, m.joined_at
+    `SELECT u.id, u.username, u.display_name, u.avatar, m.nickname, m.joined_at, m.timeout_until
      FROM members m JOIN users u ON u.id = m.user_id
      WHERE m.server_id = ? AND m.user_id = ?`, serverId, userId);
   if (!row) return null;
@@ -36,22 +42,39 @@ function memberFromRow(serverId, row) {
   return {
     user: user(row), nickname: row.nickname || null, joinedAt: row.joined_at,
     roles, online: state.isOnline(row.id),
+    timeoutUntil: row.timeout_until && row.timeout_until > Date.now() ? row.timeout_until : null,
   };
 }
 
-function server(serverId) {
+// viewerId: only include channels (and voice activity) that person can see.
+function server(serverId, viewerId) {
   const s = one('SELECT * FROM servers WHERE id = ?', serverId);
   if (!s) return null;
   const members = all(
-    `SELECT u.id, u.username, u.display_name, u.avatar, m.nickname, m.joined_at
+    `SELECT u.id, u.username, u.display_name, u.avatar, m.nickname, m.joined_at, m.timeout_until
      FROM members m JOIN users u ON u.id = m.user_id WHERE m.server_id = ?`, serverId)
     .map((r) => memberFromRow(serverId, r));
+  let rows = all('SELECT * FROM channels WHERE server_id = ? ORDER BY position, id', serverId);
+  const locked = new Set();
+  if (viewerId) {
+    const hasBase = !!memberPermissions(serverId, viewerId);
+    rows = rows.filter((c) => {
+      if (channelPermissions(c, viewerId) & P.VIEW_CHANNELS) return true;
+      // Age-restricted channels show as locked to adults-to-be-verified
+      // (no birth date on file yet), and stay hidden from known minors.
+      const b = hasBase && ageBlock(c, viewerId);
+      if (b && !b.known) { locked.add(c.id); return true; }
+      return false;
+    });
+  }
+  const visible = new Set(rows.filter((c) => !locked.has(c.id)).map((c) => c.id));
   return {
     id: s.id, name: s.name, ownerId: s.owner_id, icon: s.icon || null,
-    channels: all('SELECT * FROM channels WHERE server_id = ? ORDER BY position, id', serverId).map(channel),
+    channels: rows.map((r) => (locked.has(r.id) ? { ...channel(r), locked: true } : channel(r))),
+    ageRating: s.age_rating || 0,
     roles: all('SELECT * FROM roles WHERE server_id = ? ORDER BY position DESC', serverId).map(role),
     members,
-    voiceStates: state.voiceStatesForServer(serverId),
+    voiceStates: state.voiceStatesForServer(serverId).filter((v) => visible.has(v.channelId)),
   };
 }
 
@@ -83,7 +106,7 @@ function messages(rows, viewerId) {
     return {
       id: r.id, channelId: r.channel_id, author: authors.get(r.author_id),
       content: r.content, attachments: r.attachments ? JSON.parse(r.attachments) : [],
-      replyTo: r.reply_to || null, createdAt: r.created_at, editedAt: r.edited_at || null,
+      replyTo: r.reply_to || null, createdAt: r.created_at, editedAt: r.edited_at || null, kind: r.kind || null,
       reactions: reactions.get(r.id) || [],
     };
   });
@@ -94,4 +117,14 @@ function message(id, viewerId) {
   return row ? messages([row], viewerId)[0] : null;
 }
 
-module.exports = { user, channel, role, member, server, dmChannel, messages, message };
+// The signed-in person's own profile, with account flags only they see.
+function me(userId) {
+  const r = one('SELECT * FROM users WHERE id = ?', userId);
+  const age = ageOf(userId);
+  return {
+    ...user(r), isAdmin: !!r.is_admin, hasEmail: !!r.email_enc, emailVerified: !!r.email_verified_at,
+    hasBirthdate: age !== null, over18: age !== null && age >= 18, over21: age !== null && age >= 21,
+  };
+}
+
+module.exports = { me, user, channel, role, member, server, dmChannel, messages, message };

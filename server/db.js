@@ -149,10 +149,144 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 }
 
 // Columns added after v0.1.
-{
-  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-  if (!cols.includes('terms_accepted_at')) db.exec('ALTER TABLE users ADD COLUMN terms_accepted_at INTEGER');
+function addColumn(table, column, type) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
+addColumn('users', 'terms_accepted_at', 'INTEGER');
+addColumn('users', 'email_enc', 'TEXT');          // encrypted email address
+addColumn('users', 'email_hash', 'TEXT');         // keyed hash, for lookups
+addColumn('users', 'email_verified_at', 'INTEGER');
+addColumn('users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0'); // Hearth platform admin
+addColumn('users', 'suspended_at', 'INTEGER');
+addColumn('users', 'suspended_reason', 'TEXT');
+addColumn('members', 'timeout_until', 'INTEGER');
+addColumn('channels', 'slowmode', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('channels', 'age_rating', 'INTEGER NOT NULL DEFAULT 0'); // 0, 18 or 21
+addColumn('servers', 'age_rating', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('users', 'birthdate_enc', 'TEXT');                     // encrypted YYYY-MM-DD
+addColumn('messages', 'kind', 'TEXT');                           // null, 'me', 'roll', 'flip'
+// A Hearth always has a platform admin: if none exists yet, the oldest
+// account (the person who set the server up) becomes it.
+db.exec(`UPDATE users SET is_admin = 1 WHERE id = (SELECT id FROM users ORDER BY created_at LIMIT 1)
+         AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = 1)`);
+
+db.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email_hash) WHERE email_hash IS NOT NULL;
+
+-- One-time codes sent by email (verification, password reset, email change).
+-- Only a hash of each code is stored.
+CREATE TABLE IF NOT EXISTS email_codes (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  purpose     TEXT NOT NULL,
+  code_hash   TEXT NOT NULL,
+  target_enc  TEXT,
+  target_hash TEXT,
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  expires_at  INTEGER NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+
+-- Backup codes for account recovery without email. Hashes only.
+CREATE TABLE IF NOT EXISTS recovery_codes (
+  user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash TEXT NOT NULL,
+  used_at   INTEGER,
+  PRIMARY KEY (user_id, code_hash)
+);
+
+-- Per-channel permission overrides (private channels, read-only, etc.).
+CREATE TABLE IF NOT EXISTS channel_overrides (
+  channel_id  TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  target_type TEXT NOT NULL CHECK (target_type IN ('role','member')),
+  target_id   TEXT NOT NULL,
+  allow       INTEGER NOT NULL DEFAULT 0,
+  deny        INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (channel_id, target_type, target_id)
+);
+
+-- What moderators did, viewable by people with View Audit Log.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id          TEXT PRIMARY KEY,
+  server_id   TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+  actor_id    TEXT,
+  action      TEXT NOT NULL,
+  target_type TEXT,
+  target_id   TEXT,
+  target_name TEXT,
+  reason      TEXT,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_server ON audit_log(server_id, created_at);
+
+CREATE TABLE IF NOT EXISTS blocks (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, blocked_id)
+);
+
+-- Reports deliberately don't cascade-delete: they must survive the reported
+-- content (and accounts) being deleted.
+CREATE TABLE IF NOT EXISTS reports (
+  id             TEXT PRIMARY KEY,
+  reporter_id    TEXT,
+  scope          TEXT NOT NULL CHECK (scope IN ('server','platform')),
+  server_id      TEXT,
+  channel_id     TEXT,
+  target_type    TEXT NOT NULL,
+  target_id      TEXT NOT NULL,
+  target_user_id TEXT,
+  category       TEXT NOT NULL,
+  details        TEXT,
+  evidence_id    TEXT,
+  status         TEXT NOT NULL DEFAULT 'open',
+  resolution     TEXT,
+  handled_by     TEXT,
+  created_at     INTEGER NOT NULL,
+  handled_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_reports_scope ON reports(scope, status, created_at);
+
+-- Encrypted copies of deleted content and report evidence, kept for a
+-- limited time for safety and legal reasons, then purged automatically.
+CREATE TABLE IF NOT EXISTS vault (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,
+  user_id    TEXT,
+  server_id  TEXT,
+  label      TEXT,
+  payload    BLOB NOT NULL,
+  files      TEXT,
+  created_at INTEGER NOT NULL,
+  purge_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vault_purge ON vault(purge_at);
+CREATE INDEX IF NOT EXISTS idx_vault_user ON vault(user_id);
+CREATE INDEX IF NOT EXISTS idx_vault_server ON vault(server_id);
+
+CREATE TABLE IF NOT EXISTS legal_holds (
+  id          TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL CHECK (target_type IN ('user','server')),
+  target_id   TEXT NOT NULL,
+  label       TEXT,
+  reason      TEXT NOT NULL,
+  created_by  TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  released_at INTEGER
+);
+
+-- Every time an admin opens protected data, it's recorded here.
+CREATE TABLE IF NOT EXISTS admin_log (
+  id         TEXT PRIMARY KEY,
+  admin_id   TEXT NOT NULL,
+  action     TEXT NOT NULL,
+  target     TEXT,
+  detail     TEXT,
+  created_at INTEGER NOT NULL
+);
+`);
 
 // Moves recently deleted data out of the write-ahead log into the (securely
 // overwritten) main file, so nothing lingers there either.
