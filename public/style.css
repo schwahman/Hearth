@@ -423,3 +423,34 @@ code, pre, .msg .time { font-family: var(--mono); }
 .palette .swatch i { width: 18px; height: 18px; border-radius: 3px; border: 1px solid rgba(255,255,255,.15); }
 .palette .pname { font-family: var(--display); font-size: 19px; line-height: 1; }
 .palette .pblurb { font-size: 11px; color: var(--muted); }
+
+/* ---------- guided tour ---------- */
+.tour { position: fixed; inset: 0; z-index: 80; pointer-events: none; }
+.tour-shade { position: fixed; inset: 0; background: var(--overlay); pointer-events: auto; }
+.tour-shade.clear { background: transparent; }
+.tour-ring { position: fixed; border-radius: 8px; border: 2px solid var(--accent); pointer-events: none;
+  box-shadow: 0 0 0 9999px var(--overlay), 0 0 14px color-mix(in srgb, var(--accent) 60%, transparent); transition: all .2s ease; }
+.tour-card { position: fixed; pointer-events: auto; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.4); transition: left .2s ease, top .2s ease; }
+.tour-card h3 { margin: 4px 0 6px; font-family: var(--display); font-weight: 400; font-size: 24px; color: var(--accent); }
+.tour-card p { margin: 0 0 8px; }
+.tour-step { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.tour-tip { font-size: 13px; color: var(--muted); border-left: 2px solid var(--accent-2); padding-left: 8px; }
+.tour-actions { display: flex; gap: 6px; align-items: center; margin-top: 10px; }
+@media (prefers-reduced-motion: reduce) { .tour-ring, .tour-card { transition: none; } }
+.welcome-hero { display: flex; align-items: center; gap: 12px; }
+.welcome-hero img { width: 48px; height: 48px; }
+.welcome-hero h2 { margin: 0; }
+
+/* ---------- help pages ---------- */
+.doc h3 { font-size: 16px; margin: 18px 0 6px; }
+.doc table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 14px; }
+.doc th, .doc td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.doc th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.doc code, .doc kbd { font-family: var(--mono); font-size: 13px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+.doc .toc { display: grid; gap: 4px; background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin: 18px 0; }
+.doc .toc a { color: var(--accent); text-decoration: none; }
+.doc .toc a:hover { text-decoration: underline; }
+.doc ol li, .doc ul li { margin: 6px 0; }
+.doc h2 { scroll-margin-top: 16px; }
+@media (max-width: 600px) { .doc table { font-size: 13px; } .doc th, .doc td { padding: 6px; } }

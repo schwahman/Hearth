@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Server Admin Guide · Hearth</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/js/theme-page.js"></script>
+</head>
+<body class="doc">
+<main>
+  <div class="brand"><img src="/icon.svg" alt=""><span>Hearth</span></div>
+  <h1>Server Admin Guide</h1>
+  <p class="callout">Everything server owners and moderators can do, and how to set up a server that runs smoothly. Most of it lives behind the <strong>⚙ gear</strong> next to your server's name.</p>
+
+  <nav class="toc">
+    <strong>On this page</strong>
+    <a href="#quickstart">1. Quick setup checklist</a>
+    <a href="#settings">2. Server settings</a>
+    <a href="#channels">3. Channels</a>
+    <a href="#roles">4. Roles and permissions</a>
+    <a href="#members">5. Managing members</a>
+    <a href="#reports">6. Reports</a>
+    <a href="#audit">7. Audit log</a>
+    <a href="#commands">8. Moderator commands</a>
+    <a href="#ownership">9. Ownership and deleting</a>
+    <a href="#rules">10. Your responsibilities</a>
+    <a href="#platform">11. Hearth admins (site operators)</a>
+  </nav>
+
+  <h2 id="quickstart">1. Quick setup checklist</h2>
+  <p>A setup that works well for most communities:</p>
+  <ol>
+    <li><strong>Create a "Mod" role</strong> (⚙ → <em>Roles → Create role</em>) with: Timeout members and handle reports, Delete others' messages, Kick members, View audit log. Add Ban members only for people you trust most. Give it to your moderators.</li>
+    <li><strong>Make a read-only #rules channel</strong>: create a text channel, tick <em>Read-only</em>, and tick only the Mod role. Post your rules there.</li>
+    <li><strong>Make a private #staff channel</strong>: tick <em>Private</em> and the Mod role. Only mods will see it.</li>
+    <li><strong>Turn on slowmode</strong> in busy channels (for example 5 seconds) to calm spam.</li>
+    <li><strong>Mark adult channels 18+</strong> if you have any. Never post adult content anywhere else.</li>
+    <li><strong>Invite people</strong> with ⚙ → <em>Invite</em> or <code>/invite</code>.</li>
+  </ol>
+
+  <h2 id="settings">2. Server settings (⚙)</h2>
+  <table>
+    <tr><th>Tab</th><th>What's there</th><th>Who sees it</th></tr>
+    <tr><td>Overview</td><td>Server name, icon, age requirement for the whole server, your nickname, transfer ownership, delete or leave</td><td>Everyone (editing needs Manage server)</td></tr>
+    <tr><td>Invite</td><td>Make a 7-day invite link</td><td>Create invites</td></tr>
+    <tr><td>Roles</td><td>Create, edit, color, order and delete roles</td><td>Manage roles</td></tr>
+    <tr><td>Members</td><td>Search members, assign roles, timeout, kick, ban</td><td>Everyone (actions need permissions)</td></tr>
+    <tr><td>Reports</td><td>Reports from your members, with the reported content</td><td>Timeout members and handle reports</td></tr>
+    <tr><td>Bans</td><td>Everyone banned, with reasons; unban</td><td>Ban members</td></tr>
+    <tr><td>Audit log</td><td>Every moderator action from the last 90 days</td><td>View audit log</td></tr>
+  </table>
+
+  <h2 id="channels">3. Channels</h2>
+  <ul>
+    <li><strong>Create:</strong> tap <strong>+</strong> next to "Text channels" or "Voice channels". <strong>Edit:</strong> hover a channel and tap its ⚙.</li>
+    <li><strong>Topic:</strong> a short line shown at the top of a text channel.</li>
+    <li><strong>Slowmode:</strong> each person can post once every 5 seconds up to once an hour. Moderators aren't limited. Quick version: <code>/slowmode 10</code> or <code>/slowmode off</code>.</li>
+    <li><strong>Who can view it:</strong>
+      <ul>
+        <li><em>Everyone (13+)</em>: the default.</li>
+        <li><em>18+ only</em>: for adult content. Hidden from anyone under 18, and people see a warning before entering.</li>
+        <li><em>21+ only</em>: for alcohol, cannabis or gambling content where the law requires it.</li>
+      </ul>
+    </li>
+    <li><strong>Private:</strong> only the roles you tick can see the channel. Everyone else won't even know it exists.</li>
+    <li><strong>Read-only:</strong> everyone can read, but only the roles you tick can post. Great for #rules and #announcements.</li>
+    <li><strong>Delete:</strong> the channel's ⚙ → <em>Delete</em>. You'll type its name to confirm. Messages disappear for everyone right away (see <a href="#ownership">section 9</a> for how deletion works).</li>
+  </ul>
+
+  <h2 id="roles">4. Roles and permissions</h2>
+  <h3>How roles work</h3>
+  <ul>
+    <li><strong>@everyone</strong> is the base role every member has. Its permissions are what a brand-new member can do.</li>
+    <li>Other roles <strong>add</strong> permissions. A member gets everything from all their roles combined.</li>
+    <li><strong>Order matters.</strong> Roles higher in the list outrank lower ones. Use ▲ ▼ to reorder. You can only edit, assign or move roles <em>below</em> your own highest role, and only act (timeout, kick, ban) on members whose highest role is below yours. The owner outranks everyone.</li>
+    <li>You can't give a role a permission you don't have yourself.</li>
+    <li>A role's <strong>color</strong> colors its members' names (the highest colored role wins).</li>
+    <li><strong>Assign roles:</strong> ⚙ → <em>Members</em>, then tap the role chips next to a person. Highlighted means they have it.</li>
+  </ul>
+  <h3>Every permission</h3>
+  <table>
+    <tr><th>Permission</th><th>Lets people…</th></tr>
+    <tr><td>Administrator</td><td>Do everything (bypasses all other checks). Give it sparingly.</td></tr>
+    <tr><td>Manage server</td><td>Rename the server, change its icon and age requirement</td></tr>
+    <tr><td>Manage roles</td><td>Create, edit, order and assign roles below their own, and change channel privacy</td></tr>
+    <tr><td>Manage channels</td><td>Create, edit and delete channels; set topic, slowmode and age rating</td></tr>
+    <tr><td>Timeout members and handle reports</td><td>Time people out and see and act on the server's report queue</td></tr>
+    <tr><td>View audit log</td><td>See the audit log</td></tr>
+    <tr><td>Kick members</td><td>Remove people (they can rejoin with an invite)</td></tr>
+    <tr><td>Ban members</td><td>Remove people permanently, see the ban list, unban</td></tr>
+    <tr><td>Delete others' messages</td><td>Delete anyone's messages and use <code>/purge</code></td></tr>
+    <tr><td>Create invites</td><td>Make invite links</td></tr>
+    <tr><td>View channels</td><td>See channels (remove from @everyone and grant to a role for a members-only server)</td></tr>
+    <tr><td>Send messages / Attach files / Add reactions</td><td>Post, upload files, and react</td></tr>
+    <tr><td>Join voice / Speak in voice</td><td>Connect to voice channels and talk (without Speak they join muted)</td></tr>
+    <tr><td>Camera &amp; screen share</td><td>Use video and share their screen</td></tr>
+  </table>
+
+  <h2 id="members">5. Managing members</h2>
+  <p>Open ⚙ → <em>Members</em>, or tap a person in the member list.</p>
+  <ul>
+    <li><strong>Timeout</strong> (10 minutes to 1 week): they can still read but can't post, react, or use voice. They're removed from voice right away. End a timeout early with <em>End timeout</em>. Timed-out members show ⏳.</li>
+    <li><strong>Kick:</strong> removes them; they can come back with a new invite.</li>
+    <li><strong>Ban:</strong> removes them and blocks rejoining. Undo it in ⚙ → <em>Bans</em>.</li>
+    <li>Every action asks for a <strong>reason</strong>, which is saved in the audit log. Good reasons help your team stay consistent.</li>
+  </ul>
+
+  <h2 id="reports">6. Reports</h2>
+  <ul>
+    <li>When a member reports a message or person in your server, it appears in ⚙ → <em>Reports</em> for anyone with <em>Timeout members and handle reports</em>, and you get a notice.</li>
+    <li>Each report shows the category, the reporter's note, and a <strong>preserved copy</strong> of the reported message, even if it was deleted since.</li>
+    <li>Actions: <em>Dismiss</em>, <em>Delete message</em>, <em>Timeout 1h</em>, <em>Kick</em>, <em>Ban</em>, with an optional note. Closed reports are kept under <em>Show closed</em>.</li>
+    <li>Reporters are anonymous to the person they reported, so never reveal who made a report.</li>
+    <li><strong>Child-safety reports never come to server moderators.</strong> They go straight to the Hearth safety team, which handles the legal reporting. If you see anything involving the sexual exploitation of a minor, don't screenshot or share it. Report it with the <em>Child sexual abuse or exploitation</em> category right away.</li>
+  </ul>
+
+  <h2 id="audit">7. Audit log</h2>
+  <p>⚙ → <em>Audit log</em> lists who did what and why for 90 days: kicks, bans, timeouts, role and channel changes, permission changes, deleted messages, purges and report decisions. Use it to keep your mod team accountable and to settle disputes.</p>
+
+  <h2 id="commands">8. Moderator commands</h2>
+  <table>
+    <tr><th>Command</th><th>What it does</th><th>Needs</th></tr>
+    <tr><td><code>/timeout @name 30 reason</code></td><td>Time out for 30 minutes</td><td>Timeout members</td></tr>
+    <tr><td><code>/kick @name reason</code></td><td>Kick (asks to confirm)</td><td>Kick members</td></tr>
+    <tr><td><code>/ban @name reason</code></td><td>Ban (asks to confirm)</td><td>Ban members</td></tr>
+    <tr><td><code>/slowmode 10</code> or <code>/slowmode off</code></td><td>Set slowmode for this channel</td><td>Manage channels</td></tr>
+    <tr><td><code>/purge 20</code></td><td>Delete the last 1 to 100 messages here</td><td>Delete others' messages</td></tr>
+  </table>
+  <p>Names can be a username or a display name, with or without <code>@</code>.</p>
+
+  <h2 id="ownership">9. Ownership and deleting</h2>
+  <ul>
+    <li><strong>Transfer ownership:</strong> ⚙ → <em>Overview → Transfer ownership</em>, pick a member and enter your password. You stay a member.</li>
+    <li><strong>Delete the server:</strong> ⚙ → <em>Overview → Delete server</em>, then type the server's name. All channels, messages, roles and files disappear for everyone immediately and can't be restored.</li>
+    <li><strong>What "deleted" means:</strong> deleted content is gone from Hearth right away. For safety and legal reasons, an encrypted copy is kept for 30 days, reachable only by the Hearth safety team, then erased for good. Reported content is kept for 1 year.</li>
+    <li>You must delete or transfer your servers before you can delete your own account.</li>
+  </ul>
+
+  <h2 id="rules">10. Your responsibilities</h2>
+  <p>Running a server means following the <a href="/terms.html">Terms of Service</a> and keeping illegal content out. In particular:</p>
+  <ul>
+    <li>Content involving the sexual exploitation of minors is never allowed anywhere. Report it, don't share it.</li>
+    <li>Adult content belongs only in 18+ channels or servers, and only involving consenting adults.</li>
+    <li>Threats, doxxing, trafficking, illegal sales and scams are removed and can lead to the whole server being deleted.</li>
+    <li>Your server rules can be stricter than Hearth's, but never looser.</li>
+  </ul>
+
+  <h2 id="platform">11. Hearth admins (site operators)</h2>
+  <p>The person who runs this Hearth (the first account, plus anyone they promote) has a 🛡 <strong>Hearth admin</strong> button on the far left. It covers the whole site, not one server:</p>
+  <ul>
+    <li><strong>Reports:</strong> child-safety reports (always listed first), reports about direct messages and whole servers, and anything members also sent to Hearth. Actions: dismiss, remove the message, suspend the account, delete the server.</li>
+    <li><strong>Child safety (legal duty):</strong> US law (18 U.S.C. 2258A) requires reporting apparent child sexual abuse material to NCMEC's CyberTipline (report.cybertip.org) as soon as reasonably possible. File the report, record its number in the report, and don't download or share the material. Evidence is preserved for 1 year automatically.</li>
+    <li><strong>Users:</strong> search accounts, suspend or restore them (suspension signs them out everywhere), reveal an email address for a legal reason, reset a wrongly entered birth date, and grant or remove admin.</li>
+    <li><strong>Legal holds:</strong> when you receive a preservation request from law enforcement or expect legal action, place a hold on the user or server. Their data won't be erased until you release it.</li>
+    <li><strong>Retention vault:</strong> encrypted copies of deleted content (30 days) and report evidence (1 year). Opening an item requires a reason.</li>
+    <li><strong>Admin log:</strong> every admin action and every time protected data is opened, with the reason given. Admins are accountable too.</li>
+  </ul>
+  <p class="muted">Legal questions about a specific situation (subpoenas, court orders, emergency requests) should go to a lawyer.</p>
+
+  <p class="muted"><a href="/">Back to Hearth</a> · <a href="/help.html">Getting Started guide</a> · <a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a></p>
+</main>
+</body>
+</html>

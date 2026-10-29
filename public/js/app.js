@@ -6,6 +6,7 @@ import {
   el, $, renderMarkdown, initials, colorFor, fmtTime, fmtDay, fmtSize, toast, modal, confirmDialog,
 } from './util.js';
 import * as sfx from './sfx.js';
+import { startTour } from './tour.js';
 
 // ---------------------------------------------------------------- appearance
 // A palette (retro color scheme) plus a mode: dark, grey, light, or auto.
@@ -234,6 +235,7 @@ gw.on('READY', async (d) => {
   renderRail();
   renderAccountBanner();
   updateAdminButton();
+  maybeWelcome();
 
   const code = inviteCodeFromUrl();
   if (code) {
@@ -2291,5 +2293,88 @@ async function runCommand(text) {
   }
   return true;
 }
+
+
+// ================================================================ welcome, tour, help
+const isPhone = () => window.matchMedia('(max-width: 860px)').matches;
+const onboardKey = () => `hearth_onboarded_${S.me.id}`;
+let welcomed = false;
+
+function maybeWelcome() {
+  if (welcomed) return;
+  welcomed = true;
+  try { if (localStorage.getItem(onboardKey())) return; } catch { return; }
+  setTimeout(() => {
+    if (document.querySelector('.modal-backdrop')) { welcomed = false; setTimeout(maybeWelcome, 1000); return; } // wait for other popups
+    let done = false;
+    const close = (tour) => {
+      if (done) return;
+      done = true;
+      try { localStorage.setItem(onboardKey(), '1'); } catch { /* ignore */ }
+      dlg.close();
+      if (tour) runTour();
+    };
+    const dlg = modal([
+      el('div', { class: 'welcome-hero' }, el('img', { src: '/icon.svg', alt: '' }),
+        el('h2', {}, `Welcome to Hearth, ${S.me.displayName}`)),
+      el('p', {}, 'Hearth is where your groups hang out: text channels, voice and video calls, screen sharing for games, and direct messages. Private by design, with no ads or tracking.'),
+      el('p', { class: 'muted' }, 'Want a quick tour? It takes about a minute and shows where everything is.'),
+      el('div', { class: 'row' },
+        el('a', { class: 'btn', href: '/help.html', target: '_blank', style: { marginRight: 'auto' } }, 'Read the guide'),
+        el('button', { class: 'btn', onclick: () => close(false) }, 'I’ll explore'),
+        el('button', { class: 'btn primary', onclick: () => close(true) }, 'Show me around')),
+    ], { onClose: () => close(false) });
+  }, 1500);
+}
+
+function tourSteps() {
+  const inServer = () => !!S.serverId;
+  const manages = () => inServer() && (can(P.MANAGE_CHANNELS) || can(P.MANAGE_ROLES) || can(P.KICK_MEMBERS) || can(P.MANAGE_SERVER));
+  return [
+    { title: 'Welcome to Hearth', text: 'This quick tour shows the main parts of the screen. Use Next and Back, or the arrow keys. You can replay it anytime from the ? button at the bottom left.' },
+    { nav: true, target: '#server-list', when: () => S.servers.size > 0, title: 'Your servers',
+      text: 'Each cartridge on the left is a server you belong to: a group with its own channels, roles and members. Tap one to open it.' },
+    { nav: true, target: '#add-server-btn', title: 'Create or join a server',
+      text: 'Use + to start your own server or join one with an invite link. Invite links look like hearth-address/invite/abc123.' },
+    { nav: true, target: '#home-btn', title: 'Direct messages',
+      text: 'The flame takes you to your direct messages: private one-on-one chats and calls. Start one with the + next to "Direct messages", or tap someone’s name.' },
+    { nav: true, target: '#channel-list', title: 'Channels',
+      text: 'Channels starting with # are for text. Ones with a speaker are voice channels: tap one to jump into a voice call, and tap again to see everyone’s video and screen shares.',
+      tip: 'A lock means the channel is age-restricted; 18+ and 21+ channels only appear for people old enough.' },
+    { target: '#composer', when: () => !!S.channelId, title: 'Send messages',
+      text: 'Type here and press Enter. Shift+Enter makes a new line. Drag in or paste images and files. Hover a message to react, reply, edit or report it.',
+      tip: 'Type / to see commands like /roll 2d6, /me, /shrug and more.' },
+    { target: () => (isPhone() ? $('members-btn') : $('members')), when: () => inServer(), title: 'Members',
+      text: 'See who’s online. Tap a person to message them, view their roles, or block or report them.' },
+    { nav: true, target: '#server-settings-btn', when: manages, title: 'Running your server',
+      text: 'The gear opens server settings: roles and permissions, private channels, members, timeouts and bans, reports from your members, and the audit log. The Server Admin guide explains everything.' },
+    { nav: true, target: '#me-btn', title: 'Your profile',
+      text: 'Change your name and picture, pick one of the retro color palettes with Dark, Grey or Light mode, set up account recovery, see signed-in devices, and download or delete your data.' },
+    { nav: true, target: '#help-btn', title: 'Help is always here',
+      text: 'Tap ? anytime to replay this tour or open the Getting Started and Server Admin guides.',
+      finishLabel: S.servers.size ? 'Done' : 'PRESS START',
+      onFinish: () => { if (!S.servers.size) addServerModal(); } },
+  ];
+}
+
+function runTour() {
+  startTour(tourSteps(), {
+    onStepEnter: (s) => { if (isPhone()) $('app').classList.toggle('nav-open', !!s.nav); },
+    onDone: () => { $('app').classList.remove('nav-open'); try { localStorage.setItem(onboardKey(), '1'); } catch { /* ignore */ } },
+  });
+}
+
+function helpMenu() {
+  const dlg = modal([
+    el('h2', {}, 'Help'),
+    el('div', { class: 'choice' },
+      el('button', { onclick: () => { dlg.close(); runTour(); } }, el('strong', {}, 'Take the tour'), el('div', { class: 'muted small' }, 'A one-minute walkthrough of the screen.')),
+      el('button', { onclick: () => window.open('/help.html', '_blank') }, el('strong', {}, 'Getting Started guide'), el('div', { class: 'muted small' }, 'Everything you can do on Hearth, step by step.')),
+      el('button', { onclick: () => window.open('/admin-guide.html', '_blank') }, el('strong', {}, 'Server Admin guide'), el('div', { class: 'muted small' }, 'Roles, permissions, private channels, moderation and reports.')),
+      el('button', { onclick: () => { dlg.close(); runCommand('/help'); } }, el('strong', {}, 'Slash commands'), el('div', { class: 'muted small' }, 'Shortcuts you can type in any chat.'))),
+    el('p', { class: 'muted small', style: { margin: 0 } }, el('a', { href: '/privacy.html', target: '_blank' }, 'Privacy'), ' · ', el('a', { href: '/terms.html', target: '_blank' }, 'Terms')),
+  ]);
+}
+$('help-btn').onclick = helpMenu;
 
 boot();
