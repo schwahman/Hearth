@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const config = require('./config');
-const { one, all, run, tx } = require('./db');
+const { one, all, run, tx, purgeLog } = require('./db');
 const { newId, randomCode } = require('./ids');
 const { P, ALL, DEFAULT_EVERYONE, memberPermissions, has } = require('./permissions');
 const auth = require('./auth');
@@ -42,7 +42,7 @@ async function handle(req, res) {
       if (req.method !== 'GET' && !(token && !viaCookie)) checkOrigin(req, !(viaCookie && !r.isPublic));
       const user = auth.userFromToken(token);
       if (!r.isPublic && !user) throw new HttpError(401, 'Not logged in.');
-      const body = r.raw || req.method === 'GET' || req.method === 'DELETE' ? null : await readJson(req);
+      const body = r.raw || req.method === 'GET' ? null : await readJson(req);
       const result = await r.handler({ req, res, params, query: url.searchParams, body, user, token });
       if (!res.headersSent) sendJson(res, result === undefined ? 204 : 200, result);
     } catch (err) {
@@ -184,7 +184,7 @@ route('POST', '/api/auth/register', async ({ req, res, body }) => {
   if (!config.openRegistration && one('SELECT 1 FROM users LIMIT 1')) {
     throw new HttpError(403, 'Registration is closed on this server.');
   }
-  const { id, token } = await auth.register(body.username, body.password, body.displayName, meta(req));
+  const { id, token } = await auth.register(body.username, body.password, body.displayName, meta(req), body.acceptTerms);
   return loginResponse(req, res, body, id, token);
 }, { public: true });
 
@@ -211,6 +211,90 @@ route('POST', '/api/users/@me/password', async ({ user, body, token }) => {
   return { ok: true };
 });
 
+// Permanently deletes the account and everything it created: messages,
+// uploads, reactions, invites, memberships, sessions. There is no undo.
+route('DELETE', '/api/users/@me', async ({ req, res, user, body }) => {
+  if (body.confirm !== 'DELETE') throw new HttpError(400, 'To confirm, type DELETE in capital letters.');
+  const row = one('SELECT password_hash, avatar FROM users WHERE id = ?', user.id);
+  const { ok } = await auth.verifyPassword(String(body.password || ''), row.password_hash);
+  if (!ok) throw new HttpError(403, 'Your password is incorrect.');
+  const owned = all('SELECT name FROM servers WHERE owner_id = ?', user.id);
+  if (owned.length) {
+    throw new HttpError(409, `You still own: ${owned.map((o) => o.name).join(', ')}. Delete those servers or give them to another member first.`);
+  }
+  const serverIds = all('SELECT server_id FROM members WHERE user_id = ?', user.id).map((r) => r.server_id);
+  const dmIds = all('SELECT channel_id FROM dm_recipients WHERE user_id = ?', user.id).map((r) => r.channel_id);
+  const files = all('SELECT attachments FROM messages WHERE author_id = ? AND attachments IS NOT NULL', user.id);
+
+  tx(() => {
+    run('DELETE FROM reactions WHERE user_id = ?', user.id);
+    run('DELETE FROM messages WHERE author_id = ?', user.id);
+    run('DELETE FROM invites WHERE creator_id = ?', user.id);
+    run('DELETE FROM member_roles WHERE user_id = ?', user.id);
+    run('DELETE FROM users WHERE id = ?', user.id); // cascades: sessions, memberships, DMs, bans
+    // DM conversations with nobody left in them go too.
+    run(`DELETE FROM channels WHERE type = 'dm' AND id NOT IN (SELECT channel_id FROM dm_recipients)`);
+  });
+  for (const f of files) deleteMessageFiles(f);
+  if (row.avatar) deleteUploadUrl(row.avatar);
+  purgeLog();
+
+  const gone = { userId: user.id };
+  for (const id of serverIds) {
+    bus.publish(`server:${id}`, { t: 'MEMBER_REMOVE', d: { serverId: id, userId: user.id } });
+    bus.publish(`server:${id}`, { t: 'USER_DELETE', d: gone });
+  }
+  for (const id of dmIds) bus.publish(`channel:${id}`, { t: 'USER_DELETE', d: gone });
+  bus.publish(`user:${user.id}`, { t: 'SESSIONS_REVOKED', d: {} });
+  setSessionCookie(req, res, null);
+  console.log(`[delete] account ${user.id} permanently deleted at the user's request`);
+});
+
+// Everything Hearth stores about you, as one JSON file.
+route('GET', '/api/users/@me/export', ({ res, user, token }) => {
+  const u = one('SELECT id, username, display_name, avatar, created_at, terms_accepted_at FROM users WHERE id = ?', user.id);
+  const where = (channelId) => {
+    const c = one('SELECT * FROM channels WHERE id = ?', channelId);
+    if (!c) return 'deleted channel';
+    if (c.type === 'dm') {
+      const others = all('SELECT u.username FROM dm_recipients d JOIN users u ON u.id = d.user_id WHERE d.channel_id = ? AND d.user_id != ?', c.id, user.id);
+      return `Direct message with ${others.map((o) => o.username).join(', ') || 'a deleted user'}`;
+    }
+    const srv = one('SELECT name FROM servers WHERE id = ?', c.server_id);
+    return `${srv ? srv.name : 'server'} / #${c.name}`;
+  };
+  const data = {
+    exportedAt: new Date().toISOString(),
+    account: {
+      id: u.id, username: u.username, displayName: u.display_name, avatar: u.avatar,
+      createdAt: new Date(u.created_at).toISOString(),
+      termsAcceptedAt: u.terms_accepted_at ? new Date(u.terms_accepted_at).toISOString() : null,
+      note: 'Your password is not included because Hearth never stores it, only a one-way hash.',
+    },
+    servers: all(`SELECT s.id, s.name, s.owner_id, m.nickname, m.joined_at FROM members m JOIN servers s ON s.id = m.server_id WHERE m.user_id = ?`, user.id)
+      .map((r) => ({
+        id: r.id, name: r.name, youOwnIt: r.owner_id === user.id, nickname: r.nickname,
+        joinedAt: new Date(r.joined_at).toISOString(),
+        roles: all('SELECT r.name FROM member_roles mr JOIN roles r ON r.id = mr.role_id WHERE mr.server_id = ? AND mr.user_id = ?', r.id, user.id).map((x) => x.name),
+      })),
+    messages: all('SELECT * FROM messages WHERE author_id = ? ORDER BY CAST(id AS INTEGER)', user.id).map((m) => ({
+      id: m.id, where: where(m.channel_id), content: m.content,
+      attachments: m.attachments ? JSON.parse(m.attachments) : [],
+      sentAt: new Date(m.created_at).toISOString(), editedAt: m.edited_at ? new Date(m.edited_at).toISOString() : null,
+    })),
+    reactions: all('SELECT message_id, emoji FROM reactions WHERE user_id = ?', user.id),
+    signedInDevices: auth.listSessions(user.id, token).map((x) => ({
+      device: x.userAgent, ipAddress: x.ip, lastActive: new Date(x.lastSeen).toISOString(), signedIn: new Date(x.createdAt).toISOString(),
+    })),
+  };
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Disposition': `attachment; filename="hearth-data-${u.username}.json"`,
+    'Cache-Control': 'no-store',
+  });
+  res.end(JSON.stringify(data, null, 2));
+});
+
 route('GET', '/api/users/@me/sessions', ({ user, token }) => auth.listSessions(user.id, token));
 
 route('DELETE', '/api/users/@me/sessions/:id', ({ user, params }) => {
@@ -225,7 +309,9 @@ route('PATCH', '/api/users/@me', ({ user, body }) => {
     run('UPDATE users SET display_name = ? WHERE id = ?', str(body.displayName, 'Display name', 1, 32), user.id);
   }
   if (body.avatar !== undefined) {
+    const old = one('SELECT avatar FROM users WHERE id = ?', user.id).avatar;
     run('UPDATE users SET avatar = ? WHERE id = ?', checkUploadUrl(body.avatar), user.id);
+    if (old && old !== body.avatar) deleteUploadUrl(old);
   }
   const updated = ser.user(one('SELECT * FROM users WHERE id = ?', user.id));
   for (const s of all('SELECT server_id FROM members WHERE user_id = ?', user.id)) {
@@ -263,17 +349,49 @@ route('GET', '/api/servers/:id', ({ user, params }) => {
 route('PATCH', '/api/servers/:id', ({ user, params, body }) => {
   requireServerPerm(params.id, user.id, P.MANAGE_SERVER);
   if (body.name !== undefined) run('UPDATE servers SET name = ? WHERE id = ?', str(body.name, 'Server name', 1, 64), params.id);
-  if (body.icon !== undefined) run('UPDATE servers SET icon = ? WHERE id = ?', checkUploadUrl(body.icon), params.id);
+  if (body.icon !== undefined) {
+    const old = one('SELECT icon FROM servers WHERE id = ?', params.id).icon;
+    run('UPDATE servers SET icon = ? WHERE id = ?', checkUploadUrl(body.icon), params.id);
+    if (old && old !== body.icon) deleteUploadUrl(old);
+  }
   const s = one('SELECT id, name, icon FROM servers WHERE id = ?', params.id);
   bus.publish(`server:${params.id}`, { t: 'SERVER_UPDATE', d: { id: s.id, name: s.name, icon: s.icon } });
   return s;
 });
 
-route('DELETE', '/api/servers/:id', ({ user, params }) => {
-  const s = one('SELECT owner_id FROM servers WHERE id = ?', params.id);
+// Permanently deletes a server: every channel, message, role, invite and
+// uploaded file. There is no undo and no backup copy is kept.
+route('DELETE', '/api/servers/:id', ({ user, params, body }) => {
+  const s = one('SELECT owner_id, name, icon FROM servers WHERE id = ?', params.id);
   if (!s || s.owner_id !== user.id) throw new HttpError(403, 'Only the owner can delete a server.');
-  bus.publish(`server:${params.id}`, { t: 'SERVER_DELETE', d: { id: params.id } });
-  run('DELETE FROM servers WHERE id = ?', params.id);
+  if (body.confirmName !== s.name) {
+    throw new HttpError(400, 'To confirm, type the server name exactly as it appears.');
+  }
+  deleteServerData(params.id, s);
+  purgeLog();
+  console.log(`[delete] server ${params.id} permanently deleted by its owner`);
+});
+
+function deleteServerData(serverId, s) {
+  bus.publish(`server:${serverId}`, { t: 'SERVER_DELETE', d: { id: serverId } });
+  const channelIds = all('SELECT id FROM channels WHERE server_id = ?', serverId).map((c) => c.id);
+  run('DELETE FROM servers WHERE id = ?', serverId); // cascades to channels, messages, roles, members, invites, bans
+  for (const id of channelIds) deleteChannelFiles(id);
+  if (s.icon) deleteUploadUrl(s.icon);
+}
+
+// Give the server to another member (needed before deleting your account).
+route('POST', '/api/servers/:id/transfer', async ({ user, params, body }) => {
+  const s = one('SELECT owner_id FROM servers WHERE id = ?', params.id);
+  if (!s || s.owner_id !== user.id) throw new HttpError(403, 'Only the owner can transfer a server.');
+  const { ok } = await auth.verifyPassword(String(body.password || ''), one('SELECT password_hash FROM users WHERE id = ?', user.id).password_hash);
+  if (!ok) throw new HttpError(403, 'Your password is incorrect.');
+  if (body.userId === user.id || !one('SELECT 1 FROM members WHERE server_id = ? AND user_id = ?', params.id, String(body.userId))) {
+    throw new HttpError(400, 'Pick another member of this server.');
+  }
+  run('UPDATE servers SET owner_id = ? WHERE id = ?', String(body.userId), params.id);
+  bus.publish(`server:${params.id}`, { t: 'SERVER_UPDATE', d: { id: params.id, ownerId: String(body.userId) } });
+  return { ok: true };
 });
 
 function removeMember(serverId, userId) {
@@ -411,6 +529,8 @@ route('DELETE', '/api/channels/:id', ({ user, params }) => {
   if (channel.type === 'dm') throw new HttpError(400, 'DM channels cannot be deleted.');
   requireServerPerm(channel.server_id, user.id, P.MANAGE_CHANNELS);
   run('DELETE FROM channels WHERE id = ?', channel.id);
+  deleteChannelFiles(channel.id);
+  purgeLog();
   bus.publish(`server:${channel.server_id}`, { t: 'CHANNEL_DELETE', d: { id: channel.id, serverId: channel.server_id } });
 });
 
@@ -490,6 +610,7 @@ route('DELETE', '/api/messages/:id', ({ user, params }) => {
     throw new HttpError(403, 'You cannot delete that message.');
   }
   run('DELETE FROM messages WHERE id = ?', m.id);
+  deleteMessageFiles(m);
   bus.publish(topicFor(channel), { t: 'MESSAGE_DELETE', d: { id: m.id, channelId: channel.id, serverId: channel.server_id } });
 });
 
@@ -529,6 +650,52 @@ function checkUploadUrl(url, channelId) {
   if (!fs.existsSync(file)) throw new HttpError(400, 'Attachment not found.');
   return url;
 }
+
+// ---------- permanent file removal ----------
+function uploadKeyDir(url) {
+  const m = /^\/uploads\/(\d+|avatars)\/([A-Za-z0-9_-]{16,})\//.exec(String(url || ''));
+  return m ? path.join(uploadsDir, m[1], m[2]) : null;
+}
+function deleteUploadUrl(url) {
+  const dir = uploadKeyDir(url);
+  if (dir) fs.rmSync(dir, { recursive: true, force: true });
+}
+function deleteChannelFiles(channelId) {
+  if (/^\d+$/.test(channelId)) fs.rmSync(path.join(uploadsDir, channelId), { recursive: true, force: true });
+}
+function deleteMessageFiles(row) {
+  if (!row.attachments) return;
+  try { for (const a of JSON.parse(row.attachments)) deleteUploadUrl(a.url); } catch { /* ignore */ }
+}
+
+// Files uploaded but never posted (or left behind) are removed after a day,
+// so nothing is kept that isn't visibly in use.
+function sweepOrphanUploads() {
+  const used = new Set();
+  for (const r of all('SELECT attachments FROM messages WHERE attachments IS NOT NULL')) {
+    try { for (const a of JSON.parse(r.attachments)) used.add(uploadKeyDir(a.url)); } catch { /* ignore */ }
+  }
+  for (const r of all('SELECT avatar AS u FROM users WHERE avatar IS NOT NULL UNION SELECT icon FROM servers WHERE icon IS NOT NULL')) {
+    used.add(uploadKeyDir(r.u));
+  }
+  const dayAgo = Date.now() - 24 * 3600 * 1000;
+  let removed = 0;
+  for (const folder of fs.readdirSync(uploadsDir)) {
+    const folderPath = path.join(uploadsDir, folder);
+    if (folder !== 'avatars' && !one('SELECT 1 FROM channels WHERE id = ?', folder)) {
+      fs.rmSync(folderPath, { recursive: true, force: true });
+      continue;
+    }
+    for (const key of fs.readdirSync(folderPath)) {
+      const dir = path.join(folderPath, key);
+      if (used.has(dir)) continue;
+      if (fs.statSync(dir).mtimeMs < dayAgo) { fs.rmSync(dir, { recursive: true, force: true }); removed++; }
+    }
+  }
+  if (removed) console.log(`[cleanup] removed ${removed} unused uploads`);
+}
+setTimeout(sweepOrphanUploads, 60 * 1000).unref();
+setInterval(sweepOrphanUploads, 6 * 3600 * 1000).unref();
 
 function storeUpload(req, folder) {
   const declared = Number(req.headers['content-length'] || 0);

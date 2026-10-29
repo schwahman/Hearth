@@ -106,7 +106,8 @@ function allVoiceStates() {
 }
 const voiceIn = (channelId) => allVoiceStates().filter((v) => v.channelId === channelId);
 
-function dmOther(dm) { return dm.recipients.find((r) => r.id !== S.me.id) || dm.recipients[0]; }
+const DELETED_USER = { id: 'deleted', username: 'deleted', displayName: 'Deleted user', avatar: null };
+function dmOther(dm) { return dm.recipients.find((r) => r.id !== S.me.id) || DELETED_USER; }
 
 function saveLast() { localStorage.setItem('hearth_last', JSON.stringify(S.lastChannel)); }
 
@@ -126,6 +127,8 @@ function setAuthMode(reg) {
   $('auth-submit').textContent = reg ? 'Register' : 'Log in';
   $('auth-toggle').textContent = reg ? 'Have an account? Log in' : 'Need an account? Register';
   $('auth-display-wrap').classList.toggle('hidden', !reg);
+  $('auth-terms-wrap').classList.toggle('hidden', !reg);
+  $('auth-terms').required = reg;
   $('auth-password').autocomplete = reg ? 'new-password' : 'current-password';
   $('auth-password').minLength = reg ? 12 : 1;
   $('auth-password-hint').classList.toggle('hidden', !reg);
@@ -138,7 +141,10 @@ $('auth-form').onsubmit = async (e) => {
   $('auth-error').textContent = '';
   try {
     const body = { username: $('auth-username').value.trim(), password: $('auth-password').value };
-    if (registering) body.displayName = $('auth-display').value.trim() || undefined;
+    if (registering) {
+      body.displayName = $('auth-display').value.trim() || undefined;
+      body.acceptTerms = $('auth-terms').checked;
+    }
     const res = await api('POST', registering ? '/auth/register' : '/auth/login', body);
     S.me = res.user;
     $('auth-password').value = '';
@@ -334,6 +340,17 @@ gw.on('ROLE_DELETE', ({ id, serverId }) => {
   s.roles = s.roles.filter((x) => x.id !== id);
   for (const m of s.members) m.roles = m.roles.filter((r) => r !== id);
   if (S.serverId === serverId) renderMembers();
+});
+
+// An account was permanently deleted: remove everything of theirs on screen.
+gw.on('USER_DELETE', ({ userId }) => {
+  for (const bucket of S.messages.values()) bucket.list = bucket.list.filter((m) => m.author.id !== userId);
+  for (const s of S.servers.values()) s.members = s.members.filter((m) => m.user.id !== userId);
+  for (const d of S.dms.values()) d.recipients = d.recipients.filter((r) => r.id !== userId);
+  renderMembers();
+  renderSidebar();
+  renderHeader();
+  if (S.channelId) renderMessages({ keepScroll: true });
 });
 
 gw.on('USER_UPDATE', (u) => {
@@ -708,7 +725,7 @@ function editMessage(m) {
 }
 
 async function deleteMessage(m) {
-  if (!(await confirmDialog('Delete message', 'This cannot be undone.', 'Delete'))) return;
+  if (!(await confirmDialog('Delete message', 'This message and any attached files will be permanently deleted. This cannot be undone.', 'Delete forever'))) return;
   try { await api('DELETE', `/messages/${m.id}`); } catch (err) { toast(err.message); }
 }
 
@@ -989,8 +1006,13 @@ function channelModal(s, type, existing) {
     } catch (e) { err.textContent = e.message; }
   };
   const del = async () => {
-    if (!(await confirmDialog('Delete channel', `Delete ${existing.name} and all its messages? This cannot be undone.`, 'Delete'))) return;
-    try { await api('DELETE', `/channels/${existing.id}`); dlg.close(); } catch (e) { err.textContent = e.message; }
+    dlg.close();
+    dangerDialog({
+      title: `Delete #${existing.name}?`,
+      lines: ['Every message and file in this channel will be permanently deleted for everyone.'],
+      confirmText: existing.name, confirmLabel: 'Delete channel forever',
+      run: () => api('DELETE', `/channels/${existing.id}`),
+    });
   };
   name.addEventListener('keydown', (e) => e.key === 'Enter' && save());
   const dlg = modal([
@@ -1060,10 +1082,21 @@ function overviewTab(s, dlg) {
   } }, 'Update nickname')), err);
 
   if (s.ownerId === S.me.id) {
-    wrap.append(el('div', { class: 'row' }, el('button', { class: 'btn danger', onclick: async () => {
-      if (!(await confirmDialog('Delete server', `Delete ${s.name} for everyone? All channels and messages will be gone.`, 'Delete server'))) return;
-      try { await api('DELETE', `/servers/${s.id}`); dlg.close(); } catch (e) { err.textContent = e.message; }
-    } }, 'Delete server')));
+    const others = s.members.filter((m) => m.user.id !== S.me.id);
+    wrap.append(el('div', { class: 'row' },
+      others.length ? el('button', { class: 'btn', style: { marginRight: 'auto' }, onclick: () => { dlg.close(); transferModal(s); } }, 'Transfer ownership') : null,
+      el('button', { class: 'btn danger', onclick: () => {
+        dlg.close();
+        dangerDialog({
+          title: `Delete ${s.name}?`,
+          lines: [
+            'Every channel, message, role, invite and uploaded file in this server will be permanently deleted for everyone.',
+            'Members will be removed immediately.',
+          ],
+          confirmText: s.name, confirmLabel: 'Delete server forever',
+          run: () => api('DELETE', `/servers/${s.id}`, { confirmName: s.name }),
+        });
+      } }, 'Delete server')));
   } else {
     wrap.append(el('div', { class: 'row' }, el('button', { class: 'btn danger', onclick: async () => {
       if (!(await confirmDialog('Leave server', `Leave ${s.name}? You'll need a new invite to come back.`, 'Leave'))) return;
@@ -1179,7 +1212,12 @@ function profileModal() {
     lbl, el('label', {}, 'Avatar image', pic), err,
     el('div', { class: 'row', style: { justifyContent: 'flex-start' } },
       el('button', { class: 'btn', onclick: () => { dlg.close(); passwordModal(); } }, 'Change password'),
-      el('button', { class: 'btn', onclick: () => { dlg.close(); sessionsModal(); } }, 'Signed-in devices')),
+      el('button', { class: 'btn', onclick: () => { dlg.close(); sessionsModal(); } }, 'Signed-in devices'),
+      el('a', { class: 'btn', href: '/api/users/@me/export', download: '' }, 'Download my data'),
+      el('button', { class: 'btn danger', onclick: () => { dlg.close(); deleteAccountModal(); } }, 'Delete account')),
+    el('p', { class: 'muted small', style: { margin: 0 } },
+      el('a', { href: '/privacy.html', target: '_blank' }, 'Privacy Policy'), ' \u00b7 ',
+      el('a', { href: '/terms.html', target: '_blank' }, 'Terms')),
     el('div', { class: 'row' },
       el('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'),
       el('button', { class: 'btn primary', onclick: async () => {
@@ -1256,6 +1294,83 @@ async function sessionsModal() {
     } catch (e) { list.replaceChildren(el('p', { class: 'error' }, e.message)); }
   };
   draw();
+}
+
+// A confirmation for actions that destroy data. The person must type an
+// exact phrase (and optionally their password) before the button unlocks.
+function dangerDialog({ title, lines, confirmText, confirmLabel, password = false, run }) {
+  const typed = el('input', { autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+  const pw = password ? el('input', { type: 'password', autocomplete: 'current-password' }) : null;
+  const err = el('p', { class: 'error' });
+  const go = el('button', { class: 'btn danger', disabled: true }, confirmLabel);
+  const check = () => { go.disabled = typed.value !== confirmText || (pw && !pw.value); };
+  typed.addEventListener('input', check);
+  if (pw) pw.addEventListener('input', check);
+  go.onclick = async () => {
+    go.disabled = true;
+    err.textContent = '';
+    try {
+      await run({ password: pw ? pw.value : undefined });
+      dlg.close();
+      toast('Permanently deleted.');
+    } catch (e) { err.textContent = e.message; check(); }
+  };
+  const dlg = modal([
+    el('h2', {}, title),
+    el('div', { class: 'danger-box' },
+      el('strong', {}, '\u26a0 This is permanent.'),
+      ...lines.map((l) => el('p', {}, l)),
+      el('p', {}, 'There is no undo and no backup. Not even the server administrator can recover it.')),
+    el('label', {}, 'Type ', el('code', {}, confirmText), ' to confirm', typed),
+    pw ? el('label', {}, 'Your password', pw) : null,
+    err,
+    el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), go),
+  ]);
+}
+
+function deleteAccountModal() {
+  const owned = [...S.servers.values()].filter((s) => s.ownerId === S.me.id);
+  if (owned.length) {
+    const dlg = modal([
+      el('h2', {}, 'Delete account'),
+      el('p', {}, 'You still own these servers: ', el('strong', {}, owned.map((s) => s.name).join(', ')), '.'),
+      el('p', { class: 'muted' }, 'Delete each one, or transfer it to another member (Server settings \u2192 Overview), then come back here.'),
+      el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => dlg.close() }, 'OK')),
+    ]);
+    return;
+  }
+  dangerDialog({
+    title: 'Delete your account?',
+    lines: [
+      'Your profile, every message you have sent, your uploaded files, reactions and memberships will be permanently deleted.',
+      'You will be signed out on all devices. Your username becomes available to others.',
+      'Want a copy first? Use \u201cDownload my data\u201d in your profile before continuing.',
+    ],
+    confirmText: 'DELETE', confirmLabel: 'Delete my account forever', password: true,
+    run: async ({ password }) => {
+      voice.leave();
+      await api('DELETE', '/users/@me', { password, confirm: 'DELETE' });
+      gw.close();
+      setTimeout(() => { location.href = '/'; }, 800);
+    },
+  });
+}
+
+function transferModal(s) {
+  const select = el('select', {}, s.members.filter((m) => m.user.id !== S.me.id)
+    .map((m) => el('option', { value: m.user.id }, `${m.nickname || m.user.displayName} (@${m.user.username})`)));
+  const pw = el('input', { type: 'password', autocomplete: 'current-password' });
+  const err = el('p', { class: 'error' });
+  const dlg = modal([
+    el('h2', {}, `Transfer ${s.name}`),
+    el('p', { class: 'muted' }, 'The new owner gets full control, including deleting the server. You stay a member but lose owner powers.'),
+    el('label', {}, 'New owner', select), el('label', {}, 'Your password', pw), err,
+    el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'),
+      el('button', { class: 'btn danger', onclick: async () => {
+        try { await api('POST', `/servers/${s.id}/transfer`, { userId: select.value, password: pw.value }); dlg.close(); toast('Ownership transferred.'); }
+        catch (e) { err.textContent = e.message; }
+      } }, 'Transfer ownership')),
+  ]);
 }
 
 boot();

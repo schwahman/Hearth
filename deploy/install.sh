@@ -19,8 +19,6 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-PASTE_READ_ONLY_TOKEN_HERE}"
 
 APP_DIR=/opt/hearth
 DATA_DIR=/var/lib/hearth
-LOG=/var/log/hearth-install.log
-exec > >(tee -a "$LOG") 2>&1
 echo "=== Hearth install started $(date) ==="
 
 if [[ "$GITHUB_TOKEN" == PASTE_* ]]; then

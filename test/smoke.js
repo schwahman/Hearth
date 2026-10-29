@@ -59,16 +59,16 @@ async function main() {
   await new Promise((r) => srv.stdout.once('data', r));
 
   const PW = 'velvet harbor lantern 42';
-  const a = await req('POST', '/auth/register', { username: 'alice', password: PW, displayName: 'Alice', returnToken: true });
-  const b = await req('POST', '/auth/register', { username: 'bob', password: PW, returnToken: true });
+  const a = await req('POST', '/auth/register', { acceptTerms: true, username: 'alice', password: PW, displayName: 'Alice', returnToken: true });
+  const b = await req('POST', '/auth/register', { acceptTerms: true, username: 'bob', password: PW, returnToken: true });
   assert.equal(a.status, 200, JSON.stringify(a.data)); assert.equal(b.status, 200);
-  assert.equal((await req('POST', '/auth/register', { username: 'ALICE', password: PW })).status, 409);
+  assert.equal((await req('POST', '/auth/register', { acceptTerms: true, username: 'ALICE', password: PW })).status, 409);
   assert.equal((await req('POST', '/auth/login', { username: 'alice', password: 'wrong-pass-123' })).status, 401);
   ok('register, duplicate check, bad login rejected');
 
   for (const [pw, why] of [['short1', 'too short'], ['password1234', 'common'], ['Qwerty123456', 'common (any capitalization)'],
     ['carol-is-the-best', 'contains username'], ['aaaaaaaaaaaaaa', 'repetitive']]) {
-    const r = await req('POST', '/auth/register', { username: 'carol', password: pw });
+    const r = await req('POST', '/auth/register', { acceptTerms: true, username: 'carol', password: pw });
     assert.equal(r.status, 400, `${why} password should be rejected`);
   }
   ok('weak passwords rejected (length, common list, username, repetition)');
@@ -212,7 +212,7 @@ async function main() {
     const crypto = require('node:crypto');
     const salt = crypto.randomBytes(16);
     const oldHash = `scrypt$${salt.toString('hex')}$${crypto.scryptSync('legacy pass phrase', salt, 64, { N: 16384, r: 8, p: 1 }).toString('hex')}`;
-    await req('POST', '/auth/register', { username: 'legacy', password: 'temporary words here' });
+    await req('POST', '/auth/register', { acceptTerms: true, username: 'legacy', password: 'temporary words here' });
     const w = new DatabaseSync(path.join(dataDir, 'hearth.db'));
     w.exec('PRAGMA busy_timeout = 5000');
     w.prepare("UPDATE users SET password_hash = ? WHERE username = 'legacy'").run(oldHash);
@@ -248,6 +248,63 @@ async function main() {
   ok('repeated wrong passwords lock the account temporarily');
 
   goodWs.ws.close();
+  // ---------------- permanent deletion & data rights ----------------
+  const noTerms = await req('POST', '/auth/register', { username: 'erin', password: PW });
+  assert.equal(noTerms.status, 400);
+  ok('sign-up requires agreeing to terms (13+)');
+
+  const A2 = (await req('POST', '/auth/login', { username: 'alice', password: NEWPW, returnToken: true })).data.token;
+  const ca2 = client(A2); await ca2.wait('READY');
+  const D = (await req('POST', '/auth/register', { acceptTerms: true, username: 'dave', password: 'granite willow comet 9', returnToken: true })).data.token;
+  const daveId = (await req('GET', '/users/@me', null, D)).data.id;
+  const srv2 = (await req('POST', '/servers', { name: 'Alice Place' }, A2)).data;
+  const gen2 = srv2.channels.find((c) => c.type === 'text');
+  const inv2 = (await req('POST', `/servers/${srv2.id}/invites`, {}, A2)).data;
+  await req('POST', `/invites/${inv2.code}`, null, D);
+  const daveFile = (await req('POST', `/channels/${gen2.id}/attachments`, null, D, { raw: Buffer.from('dave data'), headers: { 'X-Filename': 'd.txt', 'Content-Type': 'text/plain' } })).data;
+  await req('POST', `/channels/${gen2.id}/messages`, { content: 'hi from dave', attachments: [daveFile] }, D);
+  await req('POST', `/channels/${gen2.id}/messages`, { content: 'alice stays' }, A2);
+  const daveSrv = (await req('POST', '/servers', { name: 'Dave Den' }, D)).data;
+  const fileDir = path.join(dataDir, 'uploads', gen2.id);
+  assert.ok(fs.readdirSync(fileDir).length === 1);
+
+  const exp = await fetch(BASE + '/api/users/@me/export', { headers: { Authorization: 'Bearer ' + D } });
+  const expData = await exp.json();
+  assert.equal(expData.account.username, 'dave');
+  assert.ok(expData.messages.some((m) => m.content === 'hi from dave'));
+  assert.ok(!JSON.stringify(expData).includes('scrypt$'));
+  ok('download my data (no password hash included)');
+
+  assert.equal((await req('DELETE', '/users/@me', { password: 'granite willow comet 9', confirm: 'DELETE' }, D)).status, 409);
+  assert.equal((await req('DELETE', `/servers/${daveSrv.id}`, { confirmName: 'wrong' }, D)).status, 400);
+  assert.equal((await req('DELETE', `/servers/${daveSrv.id}`, { confirmName: 'Dave Den' }, D)).status, 204);
+  ok('server deletion needs the exact name typed; owners must delete/transfer servers first');
+
+  assert.equal((await req('DELETE', '/users/@me', { password: 'granite willow comet 9', confirm: 'delete' }, D)).status, 400);
+  assert.equal((await req('DELETE', '/users/@me', { password: 'wrong password here', confirm: 'DELETE' }, D)).status, 403);
+  assert.equal((await req('DELETE', '/users/@me', { password: 'granite willow comet 9', confirm: 'DELETE' }, D)).status, 204);
+  await ca2.wait('USER_DELETE', (d) => d.userId === daveId);
+  assert.equal((await req('GET', '/users/@me', null, D)).status, 401);
+  const left = (await req('GET', `/channels/${gen2.id}/messages`, null, A2)).data;
+  assert.ok(!left.some((m) => m.author.username === 'dave') && left.some((m) => m.content === 'alice stays'));
+  assert.equal(fs.readdirSync(fileDir).length, 0);
+  {
+    const dbr2 = new DatabaseSync(path.join(dataDir, 'hearth.db'), { readOnly: true });
+    assert.equal(dbr2.prepare("SELECT COUNT(*) AS n FROM users WHERE username = 'dave'").get().n, 0);
+    assert.equal(dbr2.prepare('SELECT COUNT(*) AS n FROM messages WHERE author_id = ?').get(daveId).n, 0);
+    dbr2.close();
+    const raw = fs.readFileSync(path.join(dataDir, 'hearth.db'));
+    assert.ok(!raw.includes(Buffer.from('hi from dave')), 'deleted text must not remain in the database file');
+  }
+  ok('account deletion: password + typed DELETE; messages, files and account erased, even from the db file');
+
+  const chFile = (await req('POST', `/channels/${gen2.id}/attachments`, null, A2, { raw: Buffer.from('x'), headers: { 'X-Filename': 'x.txt' } })).data;
+  await req('POST', `/channels/${gen2.id}/messages`, { attachments: [chFile] }, A2);
+  assert.equal((await req('DELETE', `/servers/${srv2.id}`, { confirmName: 'Alice Place' }, A2)).status, 204);
+  assert.ok(!fs.existsSync(fileDir));
+  ok('server deletion removes its uploaded files from disk');
+  ca2.ws.close();
+
   ca.ws.close(); cb.ws.close();
   console.log(`\nAll ${passed} checks passed.`);
 }

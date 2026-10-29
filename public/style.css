@@ -228,3 +228,21 @@ label input, label select, label textarea { margin-top: 6px; text-transform: non
   .msg .actions button { padding: 8px 10px; }
   .ctl { padding: 10px 0; }
 }
+
+/* ---------- destructive actions ---------- */
+.danger-box { border: 1px solid var(--danger); background: rgba(229,72,77,.1); border-radius: 10px; padding: 12px 14px; }
+.danger-box p { margin: 6px 0 0; }
+.danger-box strong { color: #ff8a8d; }
+label.check { display: flex; gap: 10px; align-items: flex-start; text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 13px; color: var(--muted); }
+label.check input { width: auto; margin: 2px 0 0; }
+a.btn { display: inline-block; text-decoration: none; color: var(--text); }
+
+/* ---------- policy pages ---------- */
+body.doc { overflow: auto; }
+.doc main { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+.doc h1 { font-size: 28px; margin: 12px 0 4px; }
+.doc h2 { font-size: 19px; margin: 28px 0 8px; color: var(--accent-2); }
+.doc p, .doc li { color: #d9d1c7; }
+.doc li { margin: 4px 0; }
+.doc .callout { border-left: 3px solid var(--accent); background: var(--bg-2); padding: 10px 14px; border-radius: 6px; }
+.doc .fill { background: #4a3a14; color: #ffd98a; padding: 0 4px; border-radius: 4px; }

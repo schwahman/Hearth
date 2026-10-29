@@ -25,6 +25,17 @@ Hearth follows the same published standards large services use: the **OWASP** Pa
 - **File access:** uploads are only served to logged-in people who can see that channel.
 - **Clickjacking / sniffing:** `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`; HSTS when on HTTPS.
 
+## Deleting data
+- **Messages, channels, servers and accounts are deleted permanently**, including their uploaded files on disk. Every deletion that loses data shows a "this is permanent" warning, and servers/channels/accounts require typing an exact phrase (accounts also require the password).
+- The database runs with **secure delete**, so deleted rows are overwritten with zeros, and the write-ahead log is flushed after deletions. Deleted text can't be recovered from the database file (verified by the test suite).
+- **No backups** are kept. If backups are added later, the Privacy Policy must say how long they last.
+- Uploads never attached to a message are removed after 24 hours. System logs are kept for 30 days.
+- Account owners must delete or transfer servers they own before deleting their account.
+
+## Your data
+- **Download my data** gives a JSON copy of everything stored about you (no password hash).
+- Sign-up requires agreeing that you're 13+ and to the Terms and Privacy Policy (`public/terms.html`, `public/privacy.html`; fill in the bracketed operator details before going public).
+
 ## Server side
 - Runs as an unprivileged `hearth` user, sandboxed by systemd so it can only write to its own data folder.
 - Data folder is readable only by that user.

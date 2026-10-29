@@ -195,7 +195,7 @@ setInterval(() => {
 }, 600000).unref();
 
 // ---------- account actions ----------
-async function register(username, password, displayName, meta) {
+async function register(username, password, displayName, meta, acceptedTerms) {
   // Up to 30 tries an hour (people fumble the rules), but at most 5 new
   // accounts an hour from one address.
   hit(`reg:${meta.ip}`, 30, 3600 * 1000);
@@ -207,14 +207,18 @@ async function register(username, password, displayName, meta) {
     throw new HttpError(400, 'Username must be 2-32 letters, numbers, dots or underscores.');
   }
   checkPasswordRules(password, username);
+  if (acceptedTerms !== true) {
+    throw new HttpError(400, 'Please confirm you are at least 13 and agree to the Terms and Privacy Policy.');
+  }
   if (one('SELECT 1 FROM users WHERE username = ?', username)) {
     throw new HttpError(409, 'That username is taken.');
   }
   const hash = await hashPassword(password);
   const id = newId();
   hit(`regok:${meta.ip}`, 5, 3600 * 1000);
-  run('INSERT INTO users (id, username, display_name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)',
-    id, username, String(displayName || username).trim().slice(0, 32) || username, hash, Date.now());
+  const now = Date.now();
+  run('INSERT INTO users (id, username, display_name, password_hash, created_at, terms_accepted_at) VALUES (?, ?, ?, ?, ?, ?)',
+    id, username, String(displayName || username).trim().slice(0, 32) || username, hash, now, now);
   return { id, token: createSession(id, meta) };
 }
 

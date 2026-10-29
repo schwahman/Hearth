@@ -15,6 +15,9 @@ const db = new DatabaseSync(path.join(config.dataDir, 'hearth.db'));
 // Several nodes on one machine can share this file; wait for locks
 // instead of failing.
 db.exec('PRAGMA busy_timeout = 5000;');
+// Overwrite deleted data with zeros inside the database file, so deleted
+// accounts and messages can't be recovered from the file afterwards.
+db.exec('PRAGMA secure_delete = ON;');
 db.exec(`
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -145,6 +148,18 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
   }
 }
 
+// Columns added after v0.1.
+{
+  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (!cols.includes('terms_accepted_at')) db.exec('ALTER TABLE users ADD COLUMN terms_accepted_at INTEGER');
+}
+
+// Moves recently deleted data out of the write-ahead log into the (securely
+// overwritten) main file, so nothing lingers there either.
+function purgeLog() {
+  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch { /* busy; next checkpoint will do it */ }
+}
+
 // Small helpers so callers don't deal with prepared statements directly.
 const cache = new Map();
 function stmt(sql) {
@@ -162,4 +177,4 @@ function tx(fn) {
   catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
-module.exports = { db, one, all, run, tx };
+module.exports = { db, one, all, run, tx, purgeLog };
