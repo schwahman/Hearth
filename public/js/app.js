@@ -332,6 +332,11 @@ function clearTyping(channelId, userId) {
 }
 
 gw.on('SERVER_CREATE', (s) => { S.servers.set(s.id, s); renderRail(); });
+gw.on('IMPORT_PROGRESS', (job) => {
+  if (IMPORT.onJob) IMPORT.onJob(job);
+  else if (job.status === 'done') toast(`Import finished: ${job.sourceName}. Open it to review its channels.`);
+  else if (job.status === 'interrupted') toast(`The import of ${job.sourceName} paused. Open “Move a server from Discord” to continue.`);
+});
 gw.on('SERVER_UPDATE', (d) => {
   const s = S.servers.get(d.id);
   if (!s) return;
@@ -634,6 +639,7 @@ function renderSidebar() {
     el('span', { class: 'channel-icon' }, c.locked ? '\u{1F512}' : isText ? '#' : '🔊'),
     el('span', { class: 'name' }, c.name),
     c.ageRating ? el('span', { class: 'age-badge', title: `${c.ageRating}+ only` }, `${c.ageRating}+`) : null,
+    c.pendingReview ? el('span', { class: 'age-badge', title: 'Hidden from members until you review its permissions' }, 'HIDDEN') : null,
     S.unread.has(c.id) ? el('span', { class: 'unread' }) : null,
     tools));
     if (!isText) {
@@ -654,6 +660,13 @@ function renderSidebar() {
   const kids = (parentId) => s.channels.filter((c) => (c.parentId || null) === parentId && c.type !== 'category')
     .sort((a, b) => (a.type === b.type ? byPos(a, b) : a.type === 'text' ? -1 : 1));
   const out = [];
+  const pending = s.channels.filter((c) => c.pendingReview && c.type !== 'category');
+  if (pending.length) {
+    out.push(el('div', { class: 'review-banner' },
+      el('strong', {}, `${pending.length} imported channel${pending.length === 1 ? ' is' : 's are'} hidden`),
+      el('div', { class: 'muted' }, 'Only you and Administrators can see them until you set who has access.'),
+      el('button', { class: 'btn primary small', onclick: () => reviewModal(s) }, 'Review channels')));
+  }
   const loose = kids(null);
   const looseText = loose.filter((c) => c.type === 'text');
   const looseVoice = loose.filter((c) => c.type === 'voice');
@@ -777,7 +790,16 @@ function renderMessages({ keepScroll = false } = {}) {
   renderTyping();
 }
 
+// Imported history shows under the original sender's name. They're a
+// stand-in "author" that isn't any Hearth account.
+function asShown(m) {
+  if (!m || !m.imported || m.kind) return m;
+  const i = m.imported;
+  return { ...m, author: { id: `imported:${i.id || i.name}`, displayName: i.name || 'unknown', username: i.username || '', avatar: i.avatar || null } };
+}
+
 function messageNodes(m, prev, bucket) {
+  m = asShown(m); prev = asShown(prev);
   const out = [];
   if (!prev || new Date(prev.createdAt).toDateString() !== new Date(m.createdAt).toDateString()) {
     out.push(el('div', { class: 'day-sep' }, fmtDay(m.createdAt)));
@@ -788,6 +810,11 @@ function messageNodes(m, prev, bucket) {
     out.push(el('div', { class: 'msg blocked-msg' }, el('div', { class: 'gutter' }),
       el('div', { class: 'muted small' }, 'Message from someone you blocked. ',
         el('a', { href: '#', onclick: (e) => { e.preventDefault(); S.revealed.add(m.id); renderMessages({ keepScroll: true }); } }, 'Show'))));
+    return out;
+  }
+  // Where imported history ends and this server's own messages begin.
+  if (m.kind === 'import_marker') {
+    out.push(el('div', { class: 'import-marker', 'data-id': m.id }, el('span', {}, '▲ Archived from Discord · new Hearth messages below ▼')));
     return out;
   }
   // Slash-command results (/me, dice, coin) are shown as one action line.
@@ -807,13 +834,13 @@ function messageNodes(m, prev, bucket) {
   const actions = el('div', { class: 'actions' },
     el('button', { title: 'React', onclick: (e) => openPicker(e, m) }, '🙂'),
     el('button', { title: 'Reply', onclick: () => setReply(m) }, '↩'),
-    mine ? el('button', { title: 'Edit', onclick: () => editMessage(m) }, '✎') : null,
+    mine && !m.imported ? el('button', { title: 'Edit', onclick: () => editMessage(m) }, '✎') : null,
     mine || canManage ? el('button', { title: 'Delete', onclick: () => deleteMessage(m) }, '🗑') : null,
-    mine ? null : el('button', { title: 'Report', onclick: () => reportModal({ targetType: 'message', targetId: m.id, serverId: S.serverId, label: 'message' }) }, '\u2691'));
+    mine && !m.imported ? null : el('button', { title: 'Report', onclick: () => reportModal({ targetType: 'message', targetId: m.id, serverId: S.serverId, label: 'message' }) }, '\u2691'));
 
   let replyRef = null;
   if (m.replyTo) {
-    const target = bucket.list.find((x) => x.id === m.replyTo);
+    const target = asShown(bucket.list.find((x) => x.id === m.replyTo));
     replyRef = el('div', { class: 'reply-ref', onclick: () => jumpTo(m.replyTo) },
       target ? el('span', {}, el('strong', {}, displayName(target.author)), ' ', target.content.slice(0, 80) || '(attachment)')
         : el('span', {}, 'Original message was deleted or is older'));
@@ -829,7 +856,9 @@ function messageNodes(m, prev, bucket) {
     return el('a', { class: 'file-card', href: a.url, download: a.name }, '📄', el('span', {}, a.name, el('div', { class: 'muted small' }, fmtSize(a.size))));
   })) : null;
 
-  const reactions = m.reactions.length ? el('div', { class: 'reactions' }, m.reactions.map((r) =>
+  const oldReactions = (m.importedReactions || []).map((r) =>
+    el('span', { class: 'reaction archived', title: 'Reaction from the Discord archive' }, `${r.emoji} ${r.count}`));
+  const reactions = m.reactions.length || oldReactions.length ? el('div', { class: 'reactions' }, oldReactions, m.reactions.map((r) =>
     el('button', { class: 'reaction' + (r.me ? ' me' : ''), onclick: () => toggleReaction(m, r.emoji, !r.me) }, `${r.emoji} ${r.count}`))) : null;
 
   out.push(el('div', { class: 'msg' + (cont ? ' cont' : ''), 'data-id': m.id },
@@ -838,7 +867,9 @@ function messageNodes(m, prev, bucket) {
       replyRef,
       cont ? null : el('div', { class: 'head' },
         el('span', { class: 'author', style: { color: roleColor(m.author.id) || '' } }, displayName(m.author)),
-        el('span', { class: 'time' }, fmtTime(m.createdAt))),
+        m.imported && m.imported.bot ? el('span', { class: 'tag bot-tag' }, 'BOT') : null,
+        m.imported ? el('span', { class: 'tag archived-tag', title: `Archived from Discord${m.author.username ? ` \u00B7 @${m.author.username}` : ''}. Not linked to any Hearth account.` }, 'ARCHIVED') : null,
+        el('span', { class: 'time', title: new Date(m.createdAt).toLocaleString() }, fmtTime(m.createdAt))),
       body, attachments, reactions),
     actions));
   return out;
@@ -1109,7 +1140,8 @@ function addServerModal() {
     el('h2', {}, 'Add a server'),
     el('div', { class: 'choice' },
       el('button', { onclick: () => { dlg.close(); createServerModal(); } }, el('strong', {}, 'Create my own'), el('div', { class: 'muted small' }, 'Start a new server for your friends or community.')),
-      el('button', { onclick: () => { dlg.close(); joinServerModal(); } }, el('strong', {}, 'Join with an invite'), el('div', { class: 'muted small' }, 'Paste an invite link or code.'))),
+      el('button', { onclick: () => { dlg.close(); joinServerModal(); } }, el('strong', {}, 'Join with an invite'), el('div', { class: 'muted small' }, 'Paste an invite link or code.')),
+      el('button', { onclick: () => { dlg.close(); importWizard(); } }, el('strong', {}, 'Move a server from Discord'), el('div', { class: 'muted small' }, 'Bring over channels, roles and chat history with a step-by-step guide.'))),
   ]);
 }
 
@@ -1989,42 +2021,22 @@ function channelModal(s, type, existing, parentId) {
     cats.map((c) => el('option', { value: c.id, selected: (existing ? existing.parentId : parentId) === c.id }, c.name)));
   const err = el('p', { class: 'error' });
 
-  // Simple privacy controls built on permission overrides.
-  const everyone = s.roles.find((r) => r.isDefault);
-  const ov = (id) => (existing && existing.overrides || []).find((o) => o.type === 'role' && o.id === id) || { allow: 0, deny: 0 };
-  const isPrivate = el('input', { type: 'checkbox' });
-  const readOnly = el('input', { type: 'checkbox' });
-  isPrivate.checked = !!(ov(everyone.id).deny & P.VIEW_CHANNELS);
-  readOnly.checked = !!(ov(everyone.id).deny & P.SEND_MESSAGES);
-  const roles = s.roles.filter((r) => !r.isDefault && r.position < myTop(s)).sort((a, b) => b.position - a.position);
-  const picks = roles.map((r) => {
-    const cb = el('input', { type: 'checkbox' });
-    cb.checked = !!(ov(r.id).allow & (P.VIEW_CHANNELS | P.SEND_MESSAGES));
-    cb.dataset.id = r.id;
-    return el('label', {}, cb, r.name);
-  });
   const canPerms = can(P.MANAGE_ROLES, s);
-  const permBox = canPerms ? el('div', { style: { display: 'grid', gap: '8px', borderTop: '1px solid var(--line)', paddingTop: '10px' } },
-    el('label', { class: 'check' }, isPrivate, 'Private: only the roles below can see it'),
-    type === 'text' ? el('label', { class: 'check' }, readOnly, 'Read-only: only the roles below can post') : null,
-    roles.length ? el('div', { class: 'perm-grid' }, picks) : el('p', { class: 'muted small' }, 'Create roles in Server settings → Roles to choose who gets access.')) : null;
-
-  const applyPerms = async (channelId) => {
-    if (!canPerms) return;
-    const deny = (isPrivate.checked ? P.VIEW_CHANNELS : 0) | (readOnly.checked && type === 'text' ? P.SEND_MESSAGES : 0);
-    await api('PUT', `/channels/${channelId}/overrides/role/${everyone.id}`, { allow: 0, deny });
-    for (const lab of picks) {
-      const cb = lab.querySelector('input');
-      const allow = cb.checked && deny ? (isPrivate.checked ? P.VIEW_CHANNELS : 0) | (readOnly.checked ? P.SEND_MESSAGES : 0) | (type === 'voice' && isPrivate.checked ? P.CONNECT : 0) : 0;
-      await api('PUT', `/channels/${channelId}/overrides/role/${cb.dataset.id}`, { allow, deny: 0 });
-    }
-  };
+  const perms = canPerms ? overrideEditor(s, type, existing) : null;
+  const permBox = perms ? perms.node : null;
+  const applyPerms = async (channelId) => { if (perms) await perms.apply(channelId); };
+  const openUp = el('input', { type: 'checkbox' });
+  const pendingBox = existing && existing.pendingReview ? el('div', { class: 'review-banner', style: { margin: 0 } },
+    el('strong', {}, 'Hidden from members'),
+    el('div', { class: 'muted' }, 'This channel came from an import. Set who can see it below, then open it up.'),
+    el('label', { class: 'check', style: { marginTop: '6px' } }, openUp, 'Open this channel to members when I save')) : null;
   const save = async () => {
     err.textContent = '';
     try {
       const patch = { name: name.value, ageRating: Number(age.value), slowmode: Number(slow.value), parentId: parentSel.value || null };
       if (type === 'text') patch.topic = topic.value;
       let id;
+      if (openUp.checked) { await applyPerms(existing.id); patch.pendingReview = false; }
       if (existing) { await api('PATCH', `/channels/${existing.id}`, patch); id = existing.id; }
       else {
         const c = await api('POST', `/servers/${s.id}/channels`, { name: name.value, type, topic: topic.value, parentId: parentSel.value || null });
@@ -2051,7 +2063,7 @@ function channelModal(s, type, existing, parentId) {
     cats.length ? el('label', {}, 'Category', parentSel) : null,
     type === 'text' ? el('label', {}, 'Slowmode', slow) : null,
     el('label', {}, 'Who can view it', age),
-    permBox, err,
+    pendingBox, permBox, err,
     el('div', { class: 'row' },
       existing ? el('button', { class: 'btn danger', onclick: del, style: { marginRight: 'auto' } }, 'Delete') : null,
       el('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'),
@@ -2484,6 +2496,381 @@ function categoryModal(s, existing) {
       el('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'),
       el('button', { class: 'btn primary', onclick: save }, existing ? 'Save' : 'Create')),
   ]);
+}
+
+
+// ---------------------------------------------------------------- channel permissions
+// Discord-style per-channel overrides: for each role, every permission is
+// Allow (✓), Deny (✕) or "use the role's normal setting" (/).
+const CHANNEL_PERMS = {
+  text: [[P.VIEW_CHANNELS, 'View channel', 'See the channel and read its messages'], [P.SEND_MESSAGES, 'Send messages'],
+    [P.ATTACH_FILES, 'Attach files'], [P.ADD_REACTIONS, 'Add reactions'], [P.MANAGE_MESSAGES, 'Manage messages', 'Delete other people’s messages'],
+    [P.MANAGE_CHANNELS, 'Manage channel'], [P.CREATE_INVITE, 'Create invite']],
+  voice: [[P.VIEW_CHANNELS, 'View channel'], [P.CONNECT, 'Connect'], [P.SPEAK, 'Speak'], [P.VIDEO, 'Video & screen share'],
+    [P.MANAGE_CHANNELS, 'Manage channel'], [P.CREATE_INVITE, 'Create invite']],
+};
+
+function overrideEditor(s, type, existing) {
+  const everyone = s.roles.find((r) => r.isDefault);
+  const original = new Map();
+  for (const o of (existing && existing.overrides) || []) if (o.type === 'role') original.set(o.id, { allow: o.allow, deny: o.deny });
+  const model = new Map([...original].map(([k, v]) => [k, { ...v }]));
+  const get = (id) => model.get(id) || { allow: 0, deny: 0 };
+  const top = myTop(s);
+  const editable = (r) => r.isDefault || r.position < top;
+  let selected = everyone.id;
+
+  const isPrivate = el('input', { type: 'checkbox' });
+  const sync = () => { isPrivate.checked = !!(get(everyone.id).deny & P.VIEW_CHANNELS); };
+  isPrivate.onchange = () => {
+    const o = { ...get(everyone.id) };
+    if (isPrivate.checked) { o.deny |= P.VIEW_CHANNELS; o.allow &= ~P.VIEW_CHANNELS; } else o.deny &= ~P.VIEW_CHANNELS;
+    model.set(everyone.id, o);
+    if (selected === everyone.id) draw();
+  };
+  const roleList = el('div', { class: 'ov-roles' });
+  const grid = el('div', { class: 'ov-grid' });
+  const adder = el('select', { class: 'ov-add' });
+  adder.onchange = () => { if (adder.value) { model.set(adder.value, get(adder.value)); selected = adder.value; draw(); } };
+
+  function draw() {
+    sync();
+    const shown = s.roles.filter((r) => r.isDefault || model.has(r.id)).sort((a, b) => (a.isDefault ? 1 : b.isDefault ? -1 : b.position - a.position));
+    shown.unshift(...shown.splice(shown.indexOf(everyone), 1));
+    roleList.replaceChildren(...shown.map((r) => el('button', {
+      class: 'ov-role' + (r.id === selected ? ' active' : ''), type: 'button', onclick: () => { selected = r.id; draw(); },
+      style: { color: r.color || '' },
+    }, r.name, get(r.id).allow || get(r.id).deny ? el('span', { class: 'ov-dot' }) : null)));
+    const rest = s.roles.filter((r) => !r.isDefault && !model.has(r.id)).sort((a, b) => b.position - a.position);
+    adder.replaceChildren(el('option', { value: '' }, rest.length ? '+ Add a role…' : 'All roles added'), ...rest.map((r) => el('option', { value: r.id }, r.name)));
+    adder.disabled = !rest.length;
+    const role = s.roles.find((r) => r.id === selected) || everyone;
+    const can = editable(role);
+    const o = get(role.id);
+    grid.replaceChildren(
+      el('div', { class: 'ov-head' }, el('span', {}, role.isDefault ? 'Everyone (@everyone)' : role.name),
+        can ? null : el('span', { class: 'muted small' }, 'Above your highest role: view only')),
+      ...CHANNEL_PERMS[type === 'voice' ? 'voice' : 'text'].map(([bit, label, hint]) => {
+        const state = o.deny & bit ? 'deny' : o.allow & bit ? 'allow' : 'inherit';
+        const set = (st) => {
+          const n = { allow: o.allow & ~bit, deny: o.deny & ~bit };
+          if (st === 'allow') n.allow |= bit;
+          if (st === 'deny') n.deny |= bit;
+          model.set(role.id, n); draw();
+        };
+        const b = (st, txt, title) => el('button', { type: 'button', class: `ov-btn ${st}` + (state === st ? ' on' : ''), title, disabled: !can, onclick: () => set(st) }, txt);
+        return el('div', { class: 'ov-row' }, el('div', {}, label, hint ? el('div', { class: 'muted small' }, hint) : null),
+          el('div', { class: 'ov-tri' }, b('deny', '✕', 'Deny'), b('inherit', '/', 'Use the role’s normal setting'), b('allow', '✓', 'Allow')));
+      }),
+      role.isDefault ? null : el('button', { type: 'button', class: 'btn small', disabled: !can, onclick: () => { model.set(role.id, { allow: 0, deny: 0 }); if (!original.has(role.id)) model.delete(role.id); selected = everyone.id; draw(); } }, 'Remove this role’s overrides'));
+  }
+  draw();
+  const node = el('div', { class: 'ov' },
+    el('div', { class: 'ov-title' }, 'Permissions'),
+    el('label', { class: 'check' }, isPrivate, 'Private channel: only roles you allow below can see it'),
+    el('div', { class: 'ov-body' }, el('div', { class: 'ov-side' }, roleList, adder), grid),
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'Deny beats the role’s normal setting; Allow on a role beats a Deny on @everyone. Owners and Administrators always have access.'));
+  async function apply(channelId) {
+    for (const [id, o] of model) {
+      const was = original.get(id) || { allow: 0, deny: 0 };
+      if (was.allow === o.allow && was.deny === o.deny) continue;
+      const r = s.roles.find((x) => x.id === id);
+      if (!r || !editable(r)) continue;
+      await api('PUT', `/channels/${channelId}/overrides/role/${id}`, { allow: o.allow, deny: o.deny });
+    }
+  }
+  return { node, apply };
+}
+
+// Who can see a channel, in a few words.
+function accessSummary(s, c) {
+  const everyone = s.roles.find((r) => r.isDefault);
+  const ov = (id) => (c.overrides || []).find((o) => o.type === 'role' && o.id === id) || { allow: 0, deny: 0 };
+  const priv = ov(everyone.id).deny & P.VIEW_CHANNELS;
+  const parts = [];
+  if (priv) {
+    const who = s.roles.filter((r) => !r.isDefault && ov(r.id).allow & P.VIEW_CHANNELS).map((r) => r.name);
+    parts.push(who.length ? `Private: ${who.join(', ')}` : 'Private: owner & admins only');
+  } else if (!(everyone.permissions & P.VIEW_CHANNELS)) parts.push('Only roles with View channels');
+  else parts.push('Everyone');
+  if (c.type === 'text' && ov(everyone.id).deny & P.SEND_MESSAGES) parts.push('read-only');
+  if (c.ageRating) parts.push(`${c.ageRating}+`);
+  return parts.join(' · ');
+}
+
+// After an import: go through the hidden channels and open them up.
+function reviewModal(s0) {
+  const list = el('div', { class: 'review-list' });
+  const closeBtn = el('button', { class: 'btn', onclick: () => dlg.close() }, 'Done for now');
+  const openAll = el('button', { class: 'btn primary', onclick: async () => {
+    if (!(await confirmDialog('Open all channels?', 'Every hidden channel becomes visible to the members its permissions allow.', 'Open all'))) return;
+    try { await api('POST', `/servers/${s0.id}/channels/open`, {}); } catch (e) { toast(e.message); }
+  } }, 'Open all');
+  const draw = () => {
+    const s = S.servers.get(s0.id) || s0;
+    const pending = s.channels.filter((c) => c.pendingReview);
+    openAll.style.display = pending.length ? '' : 'none';
+    closeBtn.textContent = pending.length ? 'Done for now' : 'Close';
+    if (!pending.length) { list.replaceChildren(el('p', {}, '✔ All channels are open. Members can now see everything their roles allow.')); return; }
+    const cats = new Map(s.channels.filter((c) => c.type === 'category').map((c) => [c.id, c.name]));
+    list.replaceChildren(...pending.filter((c) => c.type !== 'category').map((c) => el('div', { class: 'review-row' },
+      el('div', {}, el('strong', {}, (c.type === 'voice' ? '\u{1F50A} ' : '# ') + c.name),
+        el('div', { class: 'muted small' }, (c.parentId && cats.get(c.parentId) ? cats.get(c.parentId) + ' · ' : '') + accessSummary(s, c))),
+      el('div', { class: 'row', style: { margin: 0 } },
+        el('button', { class: 'btn small', onclick: () => channelModal(s, c.type, c) }, 'Permissions'),
+        el('button', { class: 'btn primary small', onclick: async () => {
+          try { await api('PATCH', `/channels/${c.id}`, { pendingReview: false }); } catch (e) { toast(e.message); }
+        } }, 'Open')))));
+  };
+  draw();
+  const timer = setInterval(draw, 800); // reflect changes made in other dialogs
+  const dlg = modal([
+    el('h2', {}, 'Review imported channels'),
+    el('p', { class: 'muted small', style: { margin: 0 } },
+      'Permissions work differently here than on Discord, so imported channels start hidden. Roles came over with matching permissions; check them, set who can see each channel, then open it.'),
+    el('div', { class: 'row', style: { justifyContent: 'flex-start', margin: 0 } },
+      can(P.MANAGE_ROLES, s0) ? el('button', { class: 'btn small', onclick: () => serverSettingsModal(S.servers.get(s0.id) || s0, 'roles') }, 'Edit roles') : null),
+    list,
+    el('div', { class: 'row' }, closeBtn, openAll),
+  ], { wide: true, onClose: () => clearInterval(timer) });
+}
+
+
+// ================================================================ Discord import wizard
+// The bot token lives only in this variable (never in browser storage) and
+// is sent to Hearth with each step.
+const IMPORT = { token: '', info: null, guildId: null, preview: null, onJob: null };
+
+function importWizard() {
+  const body = el('div', { class: 'wiz' });
+  const stepBar = el('ol', { class: 'wiz-steps' }, ['About', 'Create bot', 'Add bot', 'Choose', 'Confirm', 'Move'].map((t) => el('li', {}, t)));
+  const dlg = modal([el('h2', {}, 'Move a server from Discord'), stepBar, body], { wide: true, onClose: () => { IMPORT.onJob = null; } });
+  const mark = (n) => [...stepBar.children].forEach((li, i) => { li.className = i < n ? 'done' : i === n ? 'on' : ''; });
+  const err = () => el('p', { class: 'error' });
+  const nav = (...btns) => el('div', { class: 'row' }, ...btns);
+  const btn = (label, onclick, cls = '') => el('button', { class: 'btn ' + cls, onclick }, label);
+  const busy = async (b, fn) => { const t = b.textContent; b.disabled = true; b.textContent = 'Working…'; try { await fn(); } finally { b.disabled = false; b.textContent = t; } };
+  const ext = (href, text) => el('a', { href, target: '_blank', rel: 'noopener noreferrer' }, text);
+
+  // ---- 0. what this does
+  function intro() {
+    mark(0);
+    body.replaceChildren(
+      el('p', {}, 'This makes a ', el('strong', {}, 'new Hearth server'), ' that copies the setup of your Discord server, and the chat history you choose. Your Discord server isn’t changed.'),
+      el('div', { class: 'wiz-cols' },
+        el('div', { class: 'wiz-box ok' }, el('h3', {}, '✔ Comes over'), el('ul', {},
+          el('li', {}, 'Server name and icon'),
+          el('li', {}, 'Categories, text and voice channels, in order, with topics, slowmode and 18+ settings'),
+          el('li', {}, 'Roles: names, colors, order and matching permissions'),
+          el('li', {}, 'Who can see or post in each channel (role permissions)'),
+          el('li', {}, 'Chat history for the channels you pick: text, replies, files, embeds and reaction counts'))),
+        el('div', { class: 'wiz-box no' }, el('h3', {}, '✖ Doesn’t come over'), el('ul', {},
+          el('li', {}, 'Members and their accounts (people join with an invite and start fresh)'),
+          el('li', {}, 'Discord bots and their commands, webhooks and integrations'),
+          el('li', {}, 'Threads, forum and media channels, pins, custom emoji and stickers (shown as text)'),
+          el('li', {}, 'Per-person channel permissions, DMs, voice recordings')))),
+      el('div', { class: 'wiz-box' }, el('h3', {}, 'How old messages look'),
+        el('p', {}, 'Each message keeps the name and picture of whoever sent it on Discord, with an ', el('span', { class: 'tag archived-tag' }, 'ARCHIVED'),
+          ' tag. Archived messages belong to no one on Hearth: if that person joins later, their new account starts fresh and can’t edit or claim them. Moderators can still delete them.'),
+        el('p', { class: 'muted small' }, 'Imported channels start hidden from everyone but you, because permissions work a little differently here. You’ll review them and open them up at the end.')),
+      el('p', { class: 'muted small' }, 'You’ll need: to be the owner or an admin of the Discord server, and about 5 minutes. Big servers can take a while to copy; you can close this window and it keeps going.'),
+      nav(btn('Cancel', () => dlg.close()), btn('Let’s start', bot, 'primary')));
+  }
+
+  // ---- 1. create the bot and paste its token
+  function bot() {
+    mark(1);
+    const tok = el('input', { type: 'password', placeholder: 'Paste the bot token here', autocomplete: 'off', spellcheck: 'false', value: IMPORT.token });
+    const e = err();
+    const check = btn('Check token', () => busy(check, async () => {
+      e.textContent = '';
+      try {
+        IMPORT.token = tok.value.trim();
+        IMPORT.info = await api('POST', '/imports/discord/inspect', { token: IMPORT.token });
+        invite();
+      } catch (x) { e.textContent = x.message; }
+    }), 'primary');
+    tok.addEventListener('keydown', (ev) => ev.key === 'Enter' && check.click());
+    body.replaceChildren(
+      el('p', {}, 'Hearth reads your server through a Discord ', el('em', {}, 'bot'), ' that you create. It can only look, not post or change anything.'),
+      el('ol', { class: 'wiz-howto' },
+        el('li', {}, 'Open the ', ext('https://discord.com/developers/applications', 'Discord Developer Portal'), ' and sign in. Click ', el('strong', {}, 'New Application'), ', name it something like "Hearth Mover", and create it.'),
+        el('li', {}, 'Click ', el('strong', {}, 'Bot'), ' on the left. Under ', el('strong', {}, 'Privileged Gateway Intents'), ', turn on ', el('strong', {}, 'Message Content Intent'), ' and click ', el('strong', {}, 'Save Changes'), '. (Without it, Discord hides what messages say.)'),
+        el('li', {}, 'On the same page click ', el('strong', {}, 'Reset Token'), ', confirm, then ', el('strong', {}, 'Copy'), '. Paste it below.')),
+      el('div', { class: 'wiz-box warn' }, '\u{1F511} The token is like a password for the bot. Hearth only keeps it in memory while copying, never saves it, and you’ll reset it when you’re done.'),
+      el('label', {}, 'Bot token', tok), e,
+      nav(btn('Back', intro), check));
+  }
+
+  // ---- 2. add the bot to the Discord server, pick the server
+  function invite() {
+    mark(2);
+    const info = IMPORT.info;
+    const e = err();
+    const list = el('div', { class: 'wiz-guilds' });
+    const drawGuilds = () => list.replaceChildren(...(info.guilds.length ? info.guilds.map((g) => el('button', {
+      class: 'wiz-guild' + (IMPORT.guildId === g.id ? ' on' : ''), onclick: () => { IMPORT.guildId = g.id; drawGuilds(); },
+    }, el('span', { class: 'avatar', style: { background: colorFor(g.id) } }, initials(g.name)), g.name))
+      : [el('p', { class: 'muted' }, 'The bot isn’t in any servers yet. Use the link above, then click Refresh.')]));
+    const refresh = btn('Refresh', () => busy(refresh, async () => {
+      try { IMPORT.info = await api('POST', '/imports/discord/inspect', { token: IMPORT.token }); Object.assign(info, IMPORT.info); drawGuilds(); } catch (x) { e.textContent = x.message; }
+    }));
+    const next = btn('Next', () => busy(next, async () => {
+      e.textContent = '';
+      if (!IMPORT.guildId) { e.textContent = 'Pick the server to move.'; return; }
+      try { IMPORT.preview = await api('POST', '/imports/discord/preview', { token: IMPORT.token, guildId: IMPORT.guildId }); choose(); } catch (x) { e.textContent = x.message; }
+    }), 'primary');
+    drawGuilds();
+    body.replaceChildren(
+      el('p', {}, '✔ Token works for bot ', el('strong', {}, info.bot.name), '.'),
+      info.messageContentIntent ? null : el('div', { class: 'wiz-box warn' }, '⚠ Message Content Intent is off, so message text can’t be copied. Turn it on (Bot page → Privileged Gateway Intents), save, then click Refresh. You can still copy the server’s setup without it.'),
+      el('ol', { class: 'wiz-howto' },
+        el('li', {}, ext(info.inviteUrl, 'Open this invite link'), ', choose your Discord server, and click ', el('strong', {}, 'Authorize'), '. It only asks for ', el('em', {}, 'View Channels'), ' and ', el('em', {}, 'Read Message History'), '.'),
+        el('li', {}, 'Private channels: the bot can only copy channels it can see. In Discord, add the bot’s role to those channels, or give the bot’s role ', el('strong', {}, 'Administrator'), ' just for the move.'),
+        el('li', {}, 'Come back here, click Refresh, and pick the server.')),
+      el('div', { class: 'row', style: { justifyContent: 'space-between', margin: 0 } }, el('strong', {}, 'Servers the bot is in'), refresh),
+      list, e, nav(btn('Back', bot), next));
+  }
+
+  // ---- 3. choose what comes over
+  function choose() {
+    mark(3);
+    const pv = IMPORT.preview;
+    const canRead = IMPORT.info.messageContentIntent;
+    const nameIn = el('input', { maxlength: 64, value: pv.guild.name });
+    const files = el('input', { type: 'checkbox', checked: true });
+    const avatars = el('input', { type: 'checkbox', checked: true });
+    const since = el('input', { type: 'date' });
+    const toggles = new Map();
+    const row = (c) => {
+      const notes = [];
+      if (c.private) notes.push(el('span', { class: 'age-badge' }, 'PRIVATE'));
+      if (c.nsfw) notes.push(el('span', { class: 'age-badge' }, '18+'));
+      if (c.type === 'unsupported') {
+        return el('div', { class: 'wiz-ch skip' }, el('span', {}, '✖ ', c.name), el('span', { class: 'muted small' }, `${c.label}: won’t transfer`));
+      }
+      if (c.type === 'voice') return el('div', { class: 'wiz-ch' }, el('span', {}, '\u{1F50A} ', c.name, ...notes), el('span', { class: 'muted small' }, 'voice channel'));
+      const cb = el('input', { type: 'checkbox', checked: canRead && c.readable, disabled: !canRead || !c.readable });
+      toggles.set(c.id, cb);
+      return el('div', { class: 'wiz-ch' }, el('span', {}, '# ', c.name, ...notes),
+        c.readable ? el('label', { class: 'check small' }, cb, 'Bring messages')
+          : el('span', { class: 'muted small', title: 'Give the bot access in Discord, then go Back and Next to check again' }, '⚠ Bot can’t read: comes over empty'));
+    };
+    const groups = [];
+    const loose = pv.channels.filter((c) => !c.parentId);
+    if (loose.length) groups.push(el('div', { class: 'wiz-cat' }, el('div', { class: 'wiz-cat-name' }, 'No category'), ...loose.map(row)));
+    for (const cat of pv.categories) {
+      const kids = pv.channels.filter((c) => c.parentId === cat.id);
+      groups.push(el('div', { class: 'wiz-cat' }, el('div', { class: 'wiz-cat-name' }, cat.name), ...(kids.length ? kids.map(row) : [el('div', { class: 'muted small' }, '(empty)')])));
+    }
+    const all = (v) => toggles.forEach((cb) => { if (!cb.disabled) cb.checked = v; });
+    body.replaceChildren(
+      el('label', {}, 'Hearth server name', nameIn),
+      el('div', { class: 'row', style: { justifyContent: 'space-between', margin: 0, alignItems: 'center' } },
+        el('strong', {}, 'Channels'),
+        el('span', {}, btn('Bring all', () => all(true), 'small'), ' ', btn('Bring none', () => all(false), 'small'))),
+      el('p', { class: 'muted small', style: { margin: 0 } }, 'Every channel is created. Untick "Bring messages" for channels that should start blank (spam, memes, bot commands); keep it for the ones worth saving (rules, guides, announcements).'),
+      el('div', { class: 'wiz-chs' }, ...groups),
+      el('div', { class: 'wiz-box' }, el('strong', {}, `Roles (${pv.roles.length}): `),
+        pv.roles.length ? pv.roles.map((r, i) => el('span', { style: { color: r.color || '' } }, (i ? ', ' : '') + r.name)) : 'none',
+        pv.skippedRoles.length ? el('div', { class: 'muted small' }, `Skipped (belong to Discord bots): ${pv.skippedRoles.join(', ')}`) : null),
+      el('div', { class: 'wiz-opts' },
+        el('label', { class: 'check' }, files, 'Copy files and images (up to 25 MB each)'),
+        el('label', { class: 'check' }, avatars, 'Copy senders’ profile pictures'),
+        el('label', {}, 'Only messages since (optional)', since)),
+      nav(btn('Back', invite), btn('Next', () => {
+        IMPORT.options = {
+          guildId: pv.guild.id, name: nameIn.value.trim() || pv.guild.name, files: files.checked, avatars: avatars.checked, since: since.value || null,
+          channels: Object.fromEntries([...toggles].map(([id, cb]) => [id, { messages: cb.checked && !cb.disabled }])),
+        };
+        confirmStep();
+      }, 'primary')));
+  }
+
+  // ---- 4. confirm
+  function confirmStep() {
+    mark(4);
+    const o = IMPORT.options;
+    const withMsgs = Object.values(o.channels).filter((c) => c.messages).length;
+    const own = el('input', { type: 'checkbox' });
+    const told = el('input', { type: 'checkbox' });
+    const e = err();
+    const go = btn('Start moving', () => busy(go, async () => {
+      e.textContent = '';
+      if (!own.checked || !told.checked) { e.textContent = 'Please tick both boxes to continue.'; return; }
+      try { const job = await api('POST', '/imports/discord', { token: IMPORT.token, options: o, accepted: true }); progress(job); } catch (x) { e.textContent = x.message; }
+    }), 'primary');
+    body.replaceChildren(
+      el('div', { class: 'wiz-box' }, el('h3', {}, 'Ready to move'), el('ul', {},
+        el('li', {}, 'New Hearth server: ', el('strong', {}, o.name)),
+        el('li', {}, `${IMPORT.preview.channels.filter((c) => c.type !== 'unsupported').length} channels in ${IMPORT.preview.categories.length} categories, ${IMPORT.preview.roles.length} roles`),
+        el('li', {}, withMsgs ? `Chat history from ${withMsgs} channel${withMsgs === 1 ? '' : 's'}${o.since ? ` since ${o.since}` : ''}${o.files ? ', with files' : ', without files'}` : 'No chat history (setup only)'))),
+      el('label', { class: 'check' }, own, 'I own or am an admin of this Discord server, and I’m allowed to move its content.'),
+      el('label', { class: 'check' }, told, 'I’ve told (or will tell) the members that their messages are being copied to Hearth.'),
+      el('p', { class: 'muted small' }, 'Imported content follows Hearth’s Terms like anything else posted here. You can delete the new server at any time.'),
+      e, nav(btn('Back', choose), go));
+  }
+
+  // ---- 5. live progress, then the wrap-up
+  function progress(job) {
+    mark(5);
+    const bar = el('div', { class: 'wiz-bar' }, el('div'));
+    const line = el('p', {});
+    const stats = el('p', { class: 'muted small' });
+    const e = err();
+    const tokIn = el('input', { type: 'password', placeholder: 'Paste the bot token again', autocomplete: 'off' });
+    const actions = el('div', { class: 'row' });
+    const draw = (j) => {
+      const p = j.progress;
+      const pct = p.phase === 'done' ? 100 : p.channelsTotal ? Math.round((p.channelsDone / p.channelsTotal) * 90) + 10 : p.phase === 'messages' ? 10 : 5;
+      bar.firstChild.style.width = pct + '%';
+      if (j.status === 'done') return done(j);
+      line.textContent = j.status === 'cancelled' ? 'Import cancelled. Anything already copied is in the new server; you can delete it from its settings.'
+        : j.status === 'interrupted' ? `Paused: ${j.error || 'the import stopped.'} Paste the bot token to pick up where it left off.`
+          : p.phase === 'messages' ? `Copying messages${p.currentChannel ? ` in #${p.currentChannel}` : ''}… (channel ${Math.min(p.channelsDone + 1, p.channelsTotal)} of ${p.channelsTotal})`
+            : 'Creating the server, roles and channels…';
+      stats.textContent = `${p.messages.toLocaleString()} messages · ${p.files.toLocaleString()} files`;
+      if (j.status === 'running') {
+        actions.replaceChildren(btn('Close (keeps going)', () => dlg.close()),
+          btn('Cancel import', async () => { if (await confirmDialog('Cancel the import?', 'Copying stops. What’s already copied stays in the new server.', 'Cancel import')) api('POST', `/imports/${j.id}/cancel`).then(draw).catch((x) => { e.textContent = x.message; }); }, 'danger'));
+      } else if (j.status === 'interrupted') {
+        tokIn.value = IMPORT.token;
+        const r = btn('Continue', () => busy(r, async () => {
+          try { IMPORT.token = tokIn.value.trim(); draw(await api('POST', `/imports/${j.id}/resume`, { token: IMPORT.token })); } catch (x) { e.textContent = x.message; }
+        }), 'primary');
+        actions.replaceChildren(btn('Stop for good', () => api('POST', `/imports/${j.id}/cancel`).then(draw)), r);
+      } else actions.replaceChildren(btn('Close', () => dlg.close()));
+      tokIn.style.display = j.status === 'interrupted' ? '' : 'none';
+    };
+    IMPORT.onJob = (j) => { if (j.id === job.id) draw(j); };
+    body.replaceChildren(line, bar, stats, tokIn, e, actions);
+    draw(job);
+  }
+
+  function done(job) {
+    mark(6);
+    IMPORT.onJob = null;
+    IMPORT.token = ''; // finished with it
+    const p = job.progress;
+    body.replaceChildren(
+      el('div', { class: 'wiz-box ok' }, el('h3', {}, `✔ ${job.sourceName} is on Hearth`),
+        el('p', {}, `${p.messages.toLocaleString()} messages and ${p.files.toLocaleString()} files copied.`)),
+      p.notes.length ? el('details', { class: 'wiz-box' }, el('summary', {}, `Notes (${p.notes.length})`), el('ul', {}, p.notes.map((n) => el('li', {}, n)))) : null,
+      el('h3', {}, 'What to do next'),
+      el('ol', { class: 'wiz-howto' },
+        el('li', {}, el('strong', {}, 'Review channel permissions. '), 'Your channels are hidden from members until you open them. Check the roles, set who can see each channel, then open it.'),
+        el('li', {}, el('strong', {}, 'Retire the bot. '), 'In the ', ext('https://discord.com/developers/applications', 'Developer Portal'), ', click Reset Token (or delete the app), and remove the bot from your Discord server.'),
+        el('li', {}, el('strong', {}, 'Invite your people. '), 'Create an invite link and share it on Discord. Give roles to people as they join.')),
+      nav(btn('Close', () => dlg.close()), btn('Review channels', () => {
+        dlg.close(); selectServer(job.serverId); const s = S.servers.get(job.serverId); if (s) reviewModal(s);
+      }, 'primary')));
+  }
+
+  // Pick up an import that's still going (or paused) instead of starting over.
+  api('GET', '/imports').then((jobs) => {
+    const live = jobs.find((j) => j.status === 'running' || j.status === 'interrupted');
+    if (live) progress(live); else intro();
+  }).catch(() => intro());
 }
 
 boot();

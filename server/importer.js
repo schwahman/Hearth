@@ -548,7 +548,7 @@ function embedText(m) {
     for (const f of e.fields || []) parts.push(`**${f.name}**: ${f.value}`);
     if (e.image && e.image.url) parts.push(e.image.url);
     if (e.footer && e.footer.text) parts.push(`_${e.footer.text}_`);
-    if (parts.length) out.push('> ' + parts.join('\n').replace(/\n/g, '\n> '));
+    if (parts.length) out.push('\u2502 ' + parts.join('\n').replace(/\n/g, '\n\u2502 '));
   }
   return out;
 }
