@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Hearth</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Login / register -->
+  <section id="auth" class="auth hidden">
+    <form id="auth-form" class="auth-card">
+      <div class="brand"><img src="/icon.svg" alt=""><span>Hearth</span></div>
+      <h1 id="auth-title">Welcome back</h1>
+      <p id="auth-invite" class="muted hidden"></p>
+      <label>Username<input id="auth-username" autocomplete="username" required></label>
+      <label id="auth-display-wrap" class="hidden">Display name<input id="auth-display" autocomplete="nickname"></label>
+      <label>Password<input id="auth-password" type="password" autocomplete="current-password" required minlength="8"></label>
+      <p id="auth-error" class="error"></p>
+      <button type="submit" class="btn primary" id="auth-submit">Log in</button>
+      <p class="muted small"><a href="#" id="auth-toggle">Need an account? Register</a></p>
+    </form>
+  </section>
+
+  <!-- Main app -->
+  <section id="app" class="app hidden">
+    <nav id="rail" class="rail" aria-label="Servers">
+      <button class="rail-btn home" id="home-btn" title="Direct messages"><img src="/icon.svg" alt="Home"></button>
+      <div class="rail-sep"></div>
+      <div id="server-list" class="server-list"></div>
+      <button class="rail-btn add" id="add-server-btn" title="Create or join a server">+</button>
+    </nav>
+
+    <aside id="sidebar" class="sidebar">
+      <header class="sidebar-head" id="sidebar-head">
+        <span id="sidebar-title">Direct messages</span>
+        <button class="icon-btn" id="server-settings-btn" title="Server settings">⚙</button>
+      </header>
+      <div id="channel-list" class="channel-list"></div>
+      <div id="voice-panel" class="voice-panel hidden">
+        <div class="voice-status"><span class="dot live"></span><div><strong>Voice connected</strong><div id="voice-where" class="muted small"></div></div></div>
+        <div class="voice-controls">
+          <button class="ctl" id="vc-mute" title="Mute">🎙</button>
+          <button class="ctl" id="vc-deaf" title="Deafen">🎧</button>
+          <button class="ctl" id="vc-cam" title="Camera">📷</button>
+          <button class="ctl" id="vc-screen" title="Share screen">🖥</button>
+          <button class="ctl danger" id="vc-leave" title="Disconnect">✕</button>
+        </div>
+      </div>
+      <footer class="me-bar">
+        <button class="me" id="me-btn" title="Profile"><span class="avatar" id="me-avatar"></span><span><strong id="me-name"></strong><span class="muted small" id="me-username"></span></span></button>
+        <button class="icon-btn" id="logout-btn" title="Log out">⎋</button>
+      </footer>
+    </aside>
+
+    <main id="main" class="main">
+      <header class="main-head">
+        <button class="icon-btn mobile-only" id="menu-btn" title="Menu">☰</button>
+        <span id="channel-icon" class="channel-icon">#</span>
+        <strong id="channel-name"></strong>
+        <span id="channel-topic" class="muted topic"></span>
+        <span class="spacer"></span>
+        <button class="icon-btn hidden" id="call-btn" title="Start a call">📞</button>
+        <button class="icon-btn" id="members-btn" title="Members">👥</button>
+      </header>
+
+      <div id="call-banner" class="call-banner hidden"></div>
+      <div id="stage" class="stage hidden"></div>
+
+      <div id="messages" class="messages"></div>
+      <div id="typing" class="typing"></div>
+      <form id="composer" class="composer">
+        <div id="reply-bar" class="reply-bar hidden"></div>
+        <div id="pending-files" class="pending-files"></div>
+        <div class="composer-row">
+          <label class="icon-btn attach" title="Attach files">＋<input id="file-input" type="file" multiple hidden></label>
+          <textarea id="composer-input" rows="1" placeholder="Message"></textarea>
+          <button class="btn primary" type="submit">Send</button>
+        </div>
+      </form>
+      <div id="empty" class="empty hidden"></div>
+    </main>
+
+    <aside id="members" class="members"></aside>
+  </section>
+
+  <div id="modal-root"></div>
+  <div id="toast" class="toast"></div>
+  <div id="audio-sinks" hidden></div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

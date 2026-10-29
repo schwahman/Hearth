@@ -1,0 +1,7 @@
+[Unit]
+Description=Pull latest Hearth code and restart if changed
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+ExecStart=/usr/local/sbin/hearth-update
