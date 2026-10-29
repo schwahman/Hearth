@@ -10,12 +10,12 @@
 #   6. checks GitHub every 2 minutes and redeploys automatically when the
 #      code changes, so updates go live without anyone logging in
 #
-# Paste your read-only GitHub token below before using it.
+# Needs a read-only GitHub token, passed as GITHUB_TOKEN or pasted below.
 set -euo pipefail
 export HOME=/root
 
-GITHUB_REPO="schwahman/hearth"
-GITHUB_TOKEN="PASTE_READ_ONLY_TOKEN_HERE"
+GITHUB_REPO="schwahman/Hearth"
+GITHUB_TOKEN="${GITHUB_TOKEN:-PASTE_READ_ONLY_TOKEN_HERE}"
 
 APP_DIR=/opt/hearth
 DATA_DIR=/var/lib/hearth
