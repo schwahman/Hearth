@@ -8,8 +8,9 @@ User=hearth
 Group=hearth
 WorkingDirectory=/opt/hearth
 EnvironmentFile=/etc/hearth.env
-# '+' runs this one step as root, outside the sandbox below.
-ExecStartPre=+/opt/hearth/deploy/apply-host.sh
+# "+" runs this step as root outside the sandbox; "-" means a failure here
+# never stops Hearth from starting.
+ExecStartPre=-+/opt/hearth/deploy/apply-host.sh
 ExecStart=/usr/local/bin/node --no-warnings server/index.js
 Restart=always
 RestartSec=2

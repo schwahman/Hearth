@@ -215,6 +215,7 @@ gw.on('MESSAGE_CREATE', (m) => {
     renderRail();
     renderSidebar();
   }
+  if (m.author.id !== S.me.id) notifyMessage(m);
 });
 
 gw.on('MESSAGE_UPDATE', (m) => {
@@ -401,6 +402,37 @@ voice.addEventListener('speaking', (e) => {
   });
 });
 
+// ---------------------------------------------------------------- notifications
+// DMs and @mentions notify when you're not looking at that conversation.
+function notifyMessage(m) {
+  const c = findChannel(m.channelId);
+  if (!c) return;
+  const mentioned = new RegExp(`(^|\\W)@${S.me.username.replace(/\./g, '\\.')}(\\W|$)`, 'i').test(m.content);
+  if (c.type !== 'dm' && !mentioned) return;
+  if (!document.hidden && m.channelId === S.channelId) return;
+  if (window.hearthDesktop) window.hearthDesktop.flash();
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const where = c.type === 'dm' ? '' : ` in #${c.name}`;
+  const text = m.content || (m.attachments.length ? 'Sent a file' : '');
+  const n = new Notification(`${displayName(m.author, S.servers.get(c.serverId))}${where}`, {
+    body: text.length > 140 ? text.slice(0, 140) + '\u2026' : text, tag: m.channelId, silent: false,
+  });
+  n.onclick = () => { window.focus(); selectServer(c.serverId || null); selectChannel(c.id); n.close(); };
+}
+document.addEventListener('click', () => {
+  if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
+}, { once: true });
+
+function updateBadge() {
+  if (window.hearthDesktop) window.hearthDesktop.setBadge(S.unread.size);
+}
+
+// Desktop app: global hotkeys that work even inside games.
+if (window.hearthDesktop) {
+  window.hearthDesktop.onToggleMute(() => { if (voice.active) { voice.setMuted(!voice.muted); toast(voice.muted ? 'Muted' : 'Unmuted'); } });
+  window.hearthDesktop.onToggleDeafen(() => { if (voice.active) { voice.setDeafened(!voice.deafened); toast(voice.deafened ? 'Deafened' : 'Undeafened'); } });
+}
+
 // ---------------------------------------------------------------- navigation
 function selectServer(serverId) {
   S.serverId = serverId;
@@ -424,6 +456,7 @@ function selectChannel(channelId) {
   S.lastChannel[S.serverId || '@me'] = channelId;
   saveLast();
   S.unread.delete(channelId);
+  updateBadge();
   S.viewingVoice = null;
   S.stageWasFull = false;
   S.replyTo = null;
@@ -478,6 +511,7 @@ function renderRail() {
     return btn;
   }));
   $('home-btn').classList.toggle('active', !S.serverId);
+  updateBadge();
 }
 
 function renderSidebar() {

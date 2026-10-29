@@ -1,0 +1,23 @@
+name: Build desktop app
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['desktop-v*']
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci || npm install
+        working-directory: desktop
+      - run: npm run dist:win
+        working-directory: desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Hearth-Windows-Installer
+          path: desktop/dist/*.exe
