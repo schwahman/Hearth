@@ -8,14 +8,27 @@ import {
 import * as sfx from './sfx.js';
 
 // ---------------------------------------------------------------- appearance
-// Dark (default), grey, light, or follow the device setting.
+// A palette (retro color scheme) plus a mode: dark, grey, light, or auto.
+const PALETTES = [
+  { id: 'phosphor', name: 'Phosphor', blurb: 'Green-screen terminal', colors: ['#0d1510', '#39d98a', '#ffb000'] },
+  { id: 'pocket', name: 'Pocket Classic', blurb: '4-shade handheld green', colors: ['#0f380f', '#9bbc0f', '#c4e05a'] },
+  { id: 'twilight', name: 'Twilight 16', blurb: '16-bit console grey and violet', colors: ['#1a1922', '#a48bff', '#ff5a6e'] },
+  { id: 'neon', name: 'Neon Arcade', blurb: 'Synthwave cabinet glow', colors: ['#0f0b26', '#00e5ff', '#ff3cd6'] },
+  { id: 'dungeon', name: 'Dungeon Crawl', blurb: 'Stone, torchlight and gold', colors: ['#181714', '#e8b04a', '#d9483b'] },
+  { id: 'vector', name: 'Vector Space', blurb: 'Black-and-white vector arcade', colors: ['#070707', '#f2f2f2', '#53e0ff'] },
+  { id: 'plains', name: 'Pixel Plains', blurb: 'Platformer sky, grass and coins', colors: ['#0e1b3c', '#6ad04b', '#ffcc00'] },
+  { id: 'lava', name: 'Lava Castle', blurb: 'Final-level fire and gold', colors: ['#1a0f0d', '#ff6a2b', '#ffd23f'] },
+];
 const systemLight = window.matchMedia('(prefers-color-scheme: light)');
-function themePref() { try { return localStorage.getItem('hearth_theme') || 'dark'; } catch { return 'dark'; } }
-function applyTheme(pref = themePref()) {
-  const mode = pref === 'system' ? (systemLight.matches ? 'light' : 'dark') : pref;
-  document.documentElement.dataset.theme = mode;
+function pref(key, fallback) { try { return localStorage.getItem(key) || fallback; } catch { return fallback; } }
+function themePref() { return pref('hearth_theme', 'dark'); }
+function palettePref() { const p = pref('hearth_palette', 'phosphor'); return PALETTES.some((x) => x.id === p) ? p : 'phosphor'; }
+function applyTheme(mode = themePref(), palette = palettePref()) {
+  const resolved = mode === 'system' ? (systemLight.matches ? 'light' : 'dark') : mode;
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.dataset.palette = palette;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = mode === 'light' ? '#f6faf7' : mode === 'grey' ? '#232d28' : '#0d1510';
+  if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue('--bg-1').trim() || '#0d1510';
 }
 systemLight.addEventListener('change', () => { if (themePref() === 'system') applyTheme(); });
 applyTheme();
@@ -1360,15 +1373,28 @@ function transferModal(s) {
 }
 
 function themePicker() {
-  const seg = el('div', { class: 'seg', style: { marginTop: '6px' } });
+  const wrap = el('div', { style: { display: 'grid', gap: '10px', marginTop: '6px' } });
+  const seg = el('div', { class: 'seg' });
   for (const [k, label] of [['dark', 'Dark'], ['grey', 'Grey'], ['light', 'Light'], ['system', 'Auto']]) {
-    seg.append(el('button', { type: 'button', class: themePref() === k ? 'on' : '', onclick: () => {
+    seg.append(el('button', { type: 'button', class: themePref() === k ? 'on' : '', 'data-k': k, onclick: () => {
       try { localStorage.setItem('hearth_theme', k); } catch { /* ignore */ }
-      applyTheme(k);
-      seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.textContent === label));
+      applyTheme();
+      seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.k === k));
     } }, label));
   }
-  return seg;
+  const grid = el('div', { class: 'palette-grid' }, PALETTES.map((p) => el('button', {
+    type: 'button', class: 'palette' + (palettePref() === p.id ? ' on' : ''), 'data-id': p.id, title: p.blurb,
+    onclick: () => {
+      try { localStorage.setItem('hearth_palette', p.id); } catch { /* ignore */ }
+      applyTheme();
+      grid.querySelectorAll('.palette').forEach((b) => b.classList.toggle('on', b.dataset.id === p.id));
+    },
+  },
+  el('span', { class: 'swatch' }, p.colors.map((c) => el('i', { style: { background: c } }))),
+  el('span', { class: 'pname' }, p.name),
+  el('span', { class: 'pblurb' }, p.blurb))));
+  wrap.append(seg, grid);
+  return wrap;
 }
 
 function soundToggle() {

@@ -1,6 +1,7 @@
-// Applies the saved Dark/Grey/Light choice on standalone pages (privacy, terms).
+// Applies the saved palette and Dark/Grey/Light choice on standalone pages.
 try {
-  const pref = localStorage.getItem('hearth_theme') || 'dark';
+  const mode = localStorage.getItem('hearth_theme') || 'dark';
   const light = window.matchMedia('(prefers-color-scheme: light)').matches;
-  document.documentElement.dataset.theme = pref === 'system' ? (light ? 'light' : 'dark') : pref;
-} catch { /* default dark */ }
+  document.documentElement.dataset.theme = mode === 'system' ? (light ? 'light' : 'dark') : mode;
+  document.documentElement.dataset.palette = localStorage.getItem('hearth_palette') || 'phosphor';
+} catch { /* defaults */ }
