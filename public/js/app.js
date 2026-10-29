@@ -158,7 +158,8 @@ function setAuthMode(reg) {
   $('auth-submit').textContent = reg ? 'Register' : 'Log in';
   $('auth-toggle').textContent = reg ? 'Have an account? Log in' : 'Need an account? Register';
   $('auth-display-wrap').classList.toggle('hidden', !reg);
-  for (const id of ['auth-email-wrap', 'auth-dob-wrap', 'auth-dob-hint']) $(id).classList.toggle('hidden', !reg);
+  for (const id of ['auth-email-wrap', 'auth-dob-wrap', 'auth-dob-hint', 'auth-password2-wrap']) $(id).classList.toggle('hidden', !reg);
+  $('auth-password2').required = reg;
   $('auth-email').required = reg;
   $('auth-dob').required = reg;
   $('auth-dob').max = new Date().toISOString().slice(0, 10);
@@ -173,12 +174,28 @@ function setAuthMode(reg) {
 
 $('auth-toggle').onclick = (e) => { e.preventDefault(); setAuthMode(!registering); };
 $('auth-forgot').onclick = (e) => { e.preventDefault(); forgotModal(); };
+// Show/hide buttons on password fields.
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('.pw-eye');
+  if (!b) return;
+  const input = $(b.dataset.for) || b.previousElementSibling;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  b.title = show ? 'Hide password' : 'Show password';
+  b.classList.toggle('on', show);
+});
 $('auth-form').onsubmit = async (e) => {
   e.preventDefault();
   $('auth-error').textContent = '';
   try {
     const body = { username: $('auth-username').value.trim(), password: $('auth-password').value };
     if (registering) {
+      // Catch typos before the account is created with a password nobody knows.
+      if ($('auth-password').value !== $('auth-password2').value) {
+        $('auth-error').textContent = 'The two passwords don\u2019t match. Retype them carefully.';
+        $('auth-password2').focus();
+        return;
+      }
       body.displayName = $('auth-display').value.trim() || undefined;
       body.acceptTerms = $('auth-terms').checked;
       body.email = $('auth-email').value.trim();
@@ -1417,11 +1434,12 @@ function forgotModal() {
   const code = el('input', { autocomplete: 'one-time-code', autocapitalize: 'characters', maxlength: 12 });
   const useRecovery = el('input', { type: 'checkbox' });
   const pw = el('input', { type: 'password', autocomplete: 'new-password', maxlength: 256 });
+  const pw2 = el('input', { type: 'password', autocomplete: 'new-password', maxlength: 256 });
   const codeLabel = el('label', {}, 'Code from the email', code);
   useRecovery.onchange = () => { codeLabel.firstChild.textContent = useRecovery.checked ? 'Backup recovery code' : 'Code from the email'; };
   const step2 = el('div', { class: 'hidden', style: { display: 'grid', gap: '12px' } },
     codeLabel, el('label', { class: 'check' }, useRecovery, 'I’m using a backup recovery code'),
-    el('label', {}, 'New password', pw),
+    el('label', {}, 'New password', pw), el('label', {}, 'Type it again', pw2),
     el('p', { class: 'muted small', style: { margin: 0 } }, 'At least 12 characters. All your devices will be signed out.'));
   const btn = el('button', { class: 'btn primary' }, 'Send code');
   const skip = el('button', { class: 'btn', style: { marginRight: 'auto' } }, 'I have a recovery code');
@@ -1436,6 +1454,7 @@ function forgotModal() {
         toast(r.message);
         toStep2();
       } else {
+        if (pw.value !== pw2.value) { err.textContent = 'The two passwords don\u2019t match.'; return; }
         const body = { identifier: id.value.trim(), newPassword: pw.value };
         if (useRecovery.checked) body.recoveryCode = code.value.trim(); else body.code = code.value.trim();
         const r = await api('POST', '/auth/reset', body);
@@ -1477,23 +1496,52 @@ async function accountSecurityModal() {
   const dlg = modal([el('h2', {}, 'Account recovery'), body, el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => dlg.close() }, 'Done'))]);
   const draw = (sec) => {
     const err = el('p', { class: 'error' });
-    const pw = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Your password' });
+    const pw = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'The password you log in with' });
+    const pwErr = el('p', { class: 'error', style: { margin: '4px 0 0' } });
     const email = el('input', { type: 'email', placeholder: 'you@example.com', value: sec.email || '' });
+    const code = el('input', { inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, placeholder: '123456' });
+    const codeRow = el('div', { class: 'hidden', style: { display: 'grid', gap: '8px' } },
+      el('label', {}, 'Code from the email', code),
+      el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: async () => {
+        err.textContent = '';
+        try {
+          const updated = await api('POST', '/users/@me/email/confirm', { code: code.value.trim() });
+          S.me.hasEmail = true; S.me.emailVerified = true; renderAccountBanner(); toast('Email confirmed.'); draw(updated);
+        } catch (e) { err.textContent = e.message; }
+      } }, 'Confirm')));
+    pw.addEventListener('input', () => { pwErr.textContent = ''; });
+    const status = !sec.email ? 'Add an email so you can recover your account.'
+      : sec.emailVerified ? 'Verified: used for password resets and security alerts.'
+        : sec.emailEnabled ? 'Not verified yet. Verify it so you can recover your account.'
+          : 'Saved. It will be verified once this Hearth’s admin sets up email sending. Until then, use backup recovery codes.';
     body.replaceChildren(
       el('div', { class: 'list-row' }, el('div', {},
         el('strong', {}, 'Email: '), sec.email || 'none',
-        el('div', { class: 'muted small' }, sec.email ? (sec.emailVerified ? 'Verified — used for password resets and security alerts.' : 'Not verified yet. Verify it so you can recover your account.') : 'Add an email so you can recover your account.')),
+        el('div', { class: 'muted small' }, status)),
       el('span', { class: 'spacer' }),
-      sec.email && !sec.emailVerified ? el('button', { class: 'btn', onclick: () => { dlg.close(); verifyEmailModal(false); } }, 'Verify') : null),
-      el('label', {}, sec.email ? 'Change email' : 'Add email', email), el('label', {}, 'Password', pw),
-      el('div', { class: 'row' }, el('button', { class: 'btn', onclick: async () => {
-        err.textContent = '';
+      sec.email && !sec.emailVerified && sec.emailEnabled ? el('button', { class: 'btn', onclick: () => { dlg.close(); verifyEmailModal(false); } }, 'Verify') : null),
+      el('label', {}, sec.email ? 'New email address' : 'Email address', email),
+      el('label', {}, 'Your Hearth password', pw), pwErr,
+      el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: async () => {
+        err.textContent = ''; pwErr.textContent = '';
+        if (!email.value.trim()) { err.textContent = 'Enter an email address.'; return; }
+        if (!pw.value) { pwErr.textContent = 'Enter your password to confirm it’s you.'; pw.focus(); return; }
         try {
-          await api('POST', '/users/@me/email', { email: email.value.trim(), password: pw.value });
-          const c = window.prompt(`Enter the 6-digit code we sent to ${email.value.trim()}`);
-          if (c) { draw(await api('POST', '/users/@me/email/confirm', { code: c.trim() })); S.me.hasEmail = true; S.me.emailVerified = true; renderAccountBanner(); toast('Email updated.'); }
-        } catch (e) { err.textContent = e.message; }
-      } }, sec.email ? 'Change email' : 'Add email')),
+          const r = await api('POST', '/users/@me/email', { email: email.value.trim(), password: pw.value });
+          S.me = { ...S.me, ...r.me };
+          renderAccountBanner();
+          if (r.codeSent) {
+            toast(`Code sent to ${email.value.trim()}`);
+            codeRow.classList.remove('hidden'); codeRow.style.display = 'grid'; code.focus();
+          } else {
+            toast('Email saved.');
+            draw(r.security);
+          }
+        } catch (e) {
+          if (e.status === 403) { pwErr.textContent = e.message; pw.select(); } else err.textContent = e.message;
+        }
+      } }, sec.email ? 'Save new email' : 'Save email')),
+      codeRow,
       el('div', { class: 'list-row' }, el('div', {},
         el('strong', {}, 'Backup recovery codes'),
         el('div', { class: 'muted small' }, sec.recoveryCodesLeft === null
@@ -1525,7 +1573,7 @@ function renderAccountBanner() {
     bar = el('div', { id: 'account-banner', class: 'call-banner hidden' });
     $('main').insertBefore(bar, $('call-banner'));
   }
-  if (S.me && (!S.me.hasEmail || !S.me.emailVerified)) {
+  if (S.me && (!S.me.hasEmail || (!S.me.emailVerified && S.me.emailEnabled))) {
     bar.replaceChildren(el('span', {}, S.me.hasEmail ? 'Verify your email so you can recover your account if you forget your password.' : 'Add an email so you can recover your account if you forget your password.'),
       el('span', { class: 'spacer' }),
       el('button', { class: 'btn primary', onclick: () => (S.me.hasEmail ? verifyEmailModal(false) : accountSecurityModal()) }, S.me.hasEmail ? 'Verify' : 'Add email'),

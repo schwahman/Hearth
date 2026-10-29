@@ -279,7 +279,8 @@ async function resendVerification(userId) {
   const e = userEmail(userId);
   if (!e) throw new HttpError(400, 'Add an email address first.');
   if (e.verified) return;
-  if (!(await sendCode(userId, 'verify', e.email))) throw new HttpError(503, 'Email sending isn’t set up on this server yet.');
+  if (!mailer.canSend()) throw new HttpError(503, 'This Hearth can’t send email yet. Your address is saved and can be verified once the admin sets up email.');
+  if (!(await sendCode(userId, 'verify', e.email))) throw new HttpError(503, 'The verification email couldn’t be sent. Try again later.');
 }
 
 function verifyEmail(userId, code) {
@@ -290,15 +291,32 @@ function verifyEmail(userId, code) {
 
 // Add or change the account email. Sends a code to the new address;
 // nothing changes until it's confirmed.
+// Add or change the account email.
+//  - The password is checked first, with a clear answer if it's wrong.
+//  - If this server can send email, a code goes to the new address and
+//    nothing changes until it's confirmed.
+//  - If email sending isn't set up yet, the address is saved right away as
+//    "not verified", so it's ready to verify once sending works.
 async function requestEmailChange(userId, password, newEmail) {
-  hit(`email-change:${userId}`, 5, 3600 * 1000);
-  const u = one('SELECT password_hash FROM users WHERE id = ?', userId);
+  const u = one('SELECT password_hash, email_enc, email_verified_at FROM users WHERE id = ?', userId);
   const { ok } = await verifyPassword(String(password || ''), u.password_hash);
-  if (!ok) throw new HttpError(403, 'Your password is incorrect.');
+  if (!ok) {
+    hit(`email-change-fail:${userId}`, 10, 3600 * 1000);
+    const e = new HttpError(403, 'That password isn\u2019t right. Use the password you log in to Hearth with.');
+    e.extra = { field: 'password' };
+    throw e;
+  }
   const e = normalizeEmail(newEmail);
   const taken = one('SELECT id FROM users WHERE email_hash = ?', emailHash(e));
   if (taken && taken.id !== userId) throw new HttpError(409, 'That email address is already used by another account.');
-  if (!(await sendCode(userId, 'change', e, e))) throw new HttpError(503, 'Email sending isn’t set up on this server yet.');
+  if (!mailer.canSend()) {
+    run('UPDATE users SET email_enc = ?, email_hash = ?, email_verified_at = NULL WHERE id = ?',
+      secrets.encryptText('email', e), emailHash(e), userId);
+    return { saved: true, verified: false };
+  }
+  hit(`email-change:${userId}`, 5, 3600 * 1000);
+  if (!(await sendCode(userId, 'change', e, e))) throw new HttpError(503, 'The verification email couldn\u2019t be sent. Try again later.');
+  return { codeSent: true };
 }
 
 function confirmEmailChange(userId, code) {

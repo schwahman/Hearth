@@ -124,6 +124,7 @@ function me(userId) {
   return {
     ...user(r), isAdmin: !!r.is_admin, hasEmail: !!r.email_enc, emailVerified: !!r.email_verified_at,
     hasBirthdate: age !== null, over18: age !== null && age >= 18, over21: age !== null && age >= 21,
+    emailEnabled: require('./mailer').canSend(),
   };
 }
 

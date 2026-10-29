@@ -454,3 +454,10 @@ code, pre, .msg .time { font-family: var(--mono); }
 .doc ol li, .doc ul li { margin: 6px 0; }
 .doc h2 { scroll-margin-top: 16px; }
 @media (max-width: 600px) { .doc table { font-size: 13px; } .doc th, .doc td { padding: 6px; } }
+
+/* ---------- password fields ---------- */
+.pw-wrap { position: relative; display: block; margin-top: 6px; }
+.pw-wrap input { margin-top: 0; padding-right: 42px; }
+.pw-eye { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: none; border: 0; cursor: pointer;
+  font-size: 16px; opacity: .5; padding: 4px 8px; }
+.pw-eye.on, .pw-eye:hover { opacity: 1; }

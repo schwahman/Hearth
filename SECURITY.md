@@ -59,6 +59,19 @@ Hearth follows the same published standards large services use: the **OWASP** Pa
 - **Download my data** gives a JSON copy of everything stored about you (no password hash).
 - Sign-up requires agreeing that you're 13+ and to the Terms and Privacy Policy (`public/terms.html`, `public/privacy.html`; fill in the bracketed operator details before going public).
 
+## Emergency access (server console)
+If an admin is locked out, someone with root access to the server can run, from the hosting provider's console:
+
+```
+hearth-admin reset-password <username>   # prints a temporary password, signs out all devices
+hearth-admin make-admin <username>
+hearth-admin list-admins
+hearth-admin unsuspend <username>
+systemctl restart hearth                 # clears any login lockout
+```
+
+Every use is written to the admin log as "server-console".
+
 ## Server side
 - Runs as an unprivileged `hearth` user, sandboxed by systemd so it can only write to its own data folder.
 - Data folder is readable only by that user.

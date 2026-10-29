@@ -350,7 +350,10 @@ route('POST', '/api/users/@me/birthdate', ({ user, body }) => {
 });
 route('POST', '/api/users/@me/email/resend', async ({ user }) => { await auth.resendVerification(user.id); return { ok: true }; });
 route('POST', '/api/users/@me/email/verify', ({ user, body }) => { auth.verifyEmail(user.id, body.code); return auth.accountSecurity(user.id); });
-route('POST', '/api/users/@me/email', async ({ user, body }) => { await auth.requestEmailChange(user.id, body.password, body.email); return { ok: true }; });
+route('POST', '/api/users/@me/email', async ({ user, body }) => {
+  const r = await auth.requestEmailChange(user.id, body.password, body.email);
+  return { ...r, security: auth.accountSecurity(user.id), me: ser.me(user.id) };
+});
 route('POST', '/api/users/@me/email/confirm', ({ user, body }) => { auth.confirmEmailChange(user.id, body.code); return auth.accountSecurity(user.id); });
 route('POST', '/api/users/@me/recovery-codes', async ({ user, body }) => ({ codes: await auth.generateRecoveryCodes(user.id, body.password) }));
 

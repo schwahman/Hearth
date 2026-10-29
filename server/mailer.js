@@ -118,4 +118,4 @@ function smtp(to, message) {
   });
 }
 
-module.exports = { sendMail, configured: () => configured() || cfg.dev, devOutbox };
+module.exports = { sendMail, configured: () => configured() || cfg.dev, canSend: () => configured() || cfg.dev, devOutbox };
