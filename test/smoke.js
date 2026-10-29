@@ -579,6 +579,15 @@ async function main() {
   assert.ok(importVisible.includes('rules') && !importVisible.includes('staff'));
   ok('imported channels stay hidden from members until the owner reviews and opens them');
 
+  const gifUrl = 'https://media2.giphy.com/media/v1.Y2lkPTc5/abc123XYZ/200.gif?cid=79&rid=200.gif&ct=g';
+  assert.equal((await req('POST', `/channels/${byName.general.id}/messages`, { content: gifUrl, kind: 'gif' }, JN)).status, 403); // no Attach files on this role
+  const gm = await req('POST', `/channels/${byName.general.id}/messages`, { content: gifUrl, kind: 'gif' }, IM);
+  assert.equal(gm.status, 200); assert.equal(gm.data.kind, 'gif'); assert.equal(gm.data.content, gifUrl);
+  assert.equal((await req('POST', `/channels/${byName.general.id}/messages`, { content: 'https://evil.example/x.gif', kind: 'gif' }, IM)).status, 400);
+  assert.equal((await req('POST', `/channels/${byName.general.id}/messages`, { content: 'https://media.giphy.com.evil.example/x.gif', kind: 'gif' }, IM)).status, 400);
+  assert.equal((await req('PATCH', `/messages/${gm.data.id}`, { content: 'changed' }, IM)).status, 400);
+  ok('GIF messages only accept GIPHY addresses and can\u2019t be edited into something else');
+
   cu.ws.close();
   ca.ws.close(); cb.ws.close();
   console.log(`\nAll ${passed} checks passed.`);

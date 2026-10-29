@@ -539,3 +539,21 @@ code, pre, .msg .time { font-family: var(--mono); }
 .wiz-opts { display: grid; gap: 6px; }
 .wiz-bar { height: 12px; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; background: var(--bg-1); }
 .wiz-bar > div { height: 100%; width: 0; background: repeating-linear-gradient(90deg, var(--accent) 0 10px, transparent 10px 12px); transition: width .4s; }
+
+/* ---------- GIFs ---------- */
+.gif-btn { font-family: var(--font-pixel, monospace); font-size: 13px; font-weight: 700; letter-spacing: .04em; border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+.composer { position: relative; }
+.gif-pop { position: absolute; bottom: calc(100% + 6px); right: 0; width: min(420px, calc(100vw - 24px)); height: min(440px, 60vh); display: flex; flex-direction: column; gap: 8px;
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.45); z-index: 30; }
+.gif-top { display: flex; gap: 6px; }
+.gif-top input { flex: 1; }
+.gif-grid { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; align-content: start; }
+.gif-cell { min-width: 0; position: relative; height: 112px; padding: 0; border: 0; background: var(--bg-2); border-radius: 4px; cursor: pointer; overflow: hidden; }
+.gif-cell img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.gif-cell:hover, .gif-cell:focus-visible { outline: 2px solid var(--accent); }
+.gif-foot { display: flex; align-items: center; gap: 8px; }
+.giphy-attr { font-size: 11px; font-weight: 700; letter-spacing: .04em; color: var(--text); }
+.gif-status:empty { display: none; }
+.gif-body img.gif { max-width: min(320px, 100%); max-height: 260px; border-radius: 6px; display: block; margin-top: 2px; }
+.gif-placeholder { border: 1px dashed var(--line); background: var(--bg-1); color: var(--muted); border-radius: 6px; padding: 18px 22px; cursor: pointer; margin-top: 2px; }
+@media (max-width: 640px) { .gif-pop { position: fixed; left: 8px; right: 8px; width: auto; bottom: 80px; height: 55vh; } .gif-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

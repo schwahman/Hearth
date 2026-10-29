@@ -245,6 +245,8 @@ gw.on('READY', async (d) => {
   S.sessionId = d.sessionId;
   voice.sessionId = d.sessionId;
   voice.iceServers = d.iceServers;
+  S.gifs = d.gifs || null;
+  $('gif-btn').classList.toggle('hidden', !S.gifs);
   S.servers = new Map(d.servers.map((s) => [s.id, s]));
   S.dms = new Map(d.dms.map((c) => [c.id, c]));
   S.dmVoice = d.dmVoiceStates;
@@ -818,7 +820,7 @@ function messageNodes(m, prev, bucket) {
     return out;
   }
   // Slash-command results (/me, dice, coin) are shown as one action line.
-  if (m.kind) {
+  if (m.kind && m.kind !== 'gif') {
     const icon = { me: '*', roll: '\u{1F3B2}', flip: '\u{1FA99}' }[m.kind] || '*';
     out.push(el('div', { class: 'msg action-msg', 'data-id': m.id }, el('div', { class: 'gutter' }, el('span', { class: 'action-icon' }, icon)),
       el('div', { class: 'body' }, el('strong', { style: { color: roleColor(m.author.id) || '' } }, displayName(m.author)), ' ',
@@ -827,14 +829,14 @@ function messageNodes(m, prev, bucket) {
         ? el('div', { class: 'actions' }, el('button', { title: 'Delete', onclick: () => deleteMessage(m) }, '\u{1F5D1}')) : null));
     return out;
   }
-  const cont = prev && prev.author.id === m.author.id && !m.replyTo && !prev.kind && m.createdAt - prev.createdAt < 5 * 60000;
+  const cont = prev && prev.author.id === m.author.id && !m.replyTo && (!prev.kind || prev.kind === 'gif') && m.createdAt - prev.createdAt < 5 * 60000;
   const mine = m.author.id === S.me.id;
   const canManage = S.serverId ? can(P.MANAGE_MESSAGES) : false;
 
   const actions = el('div', { class: 'actions' },
     el('button', { title: 'React', onclick: (e) => openPicker(e, m) }, '🙂'),
     el('button', { title: 'Reply', onclick: () => setReply(m) }, '↩'),
-    mine && !m.imported ? el('button', { title: 'Edit', onclick: () => editMessage(m) }, '✎') : null,
+    mine && !m.imported && !m.kind ? el('button', { title: 'Edit', onclick: () => editMessage(m) }, '✎') : null,
     mine || canManage ? el('button', { title: 'Delete', onclick: () => deleteMessage(m) }, '🗑') : null,
     mine && !m.imported ? null : el('button', { title: 'Report', onclick: () => reportModal({ targetType: 'message', targetId: m.id, serverId: S.serverId, label: 'message' }) }, '\u2691'));
 
@@ -842,11 +844,11 @@ function messageNodes(m, prev, bucket) {
   if (m.replyTo) {
     const target = asShown(bucket.list.find((x) => x.id === m.replyTo));
     replyRef = el('div', { class: 'reply-ref', onclick: () => jumpTo(m.replyTo) },
-      target ? el('span', {}, el('strong', {}, displayName(target.author)), ' ', target.content.slice(0, 80) || '(attachment)')
+      target ? el('span', {}, el('strong', {}, displayName(target.author)), ' ', target.kind === 'gif' ? 'GIF' : target.content.slice(0, 80) || '(attachment)')
         : el('span', {}, 'Original message was deleted or is older'));
   }
 
-  const body = el('div', { class: 'body', html: renderMarkdown(m.content) });
+  const body = m.kind === 'gif' ? gifBody(m) : el('div', { class: 'body', html: renderMarkdown(m.content) });
   if (m.editedAt) body.append(' ', el('span', { class: 'edited', title: fmtTime(m.editedAt) }, '(edited)'));
 
   const attachments = m.attachments.length ? el('div', { class: 'attachments' }, m.attachments.map((a) => {
@@ -1289,6 +1291,7 @@ function profileModal() {
     lbl, el('label', {}, 'Avatar image', pic),
     el('label', {}, 'Appearance', themePicker()),
     el('label', { class: 'check' }, soundToggle(), 'Retro sound effects'),
+    S.gifs ? el('label', { class: 'check' }, gifToggle(), 'Show GIFs automatically (they load from GIPHY, which can see your IP address; when off, tap a GIF to load it)') : null,
     err,
     el('div', { class: 'row', style: { justifyContent: 'flex-start' } },
       el('button', { class: 'btn', onclick: () => { dlg.close(); passwordModal(); } }, 'Change password'),
@@ -2243,6 +2246,7 @@ async function adminLog() {
 const COMMANDS = [
   { name: 'help', desc: 'Show all commands' },
   { name: 'me', args: '<action>', desc: 'Say what you’re doing, like /me grabs snacks' },
+  { name: 'gif', args: '[search]', desc: 'Search for a GIF and send it' },
   { name: 'shrug', args: '[text]', desc: 'Add ¯\\_(ツ)_/¯ to a message' },
   { name: 'tableflip', args: '[text]', desc: 'Flip a table (╯°□°)╯︵ ┻━┻' },
   { name: 'unflip', args: '[text]', desc: 'Put it back ┬─┬ノ( º _ ºノ)' },
@@ -2336,6 +2340,9 @@ async function runCommand(text) {
           el('div', { class: 'list-row' }, el('code', {}, `/${c.name}${c.args ? ' ' + c.args : ''}`), el('span', { class: 'muted small' }, c.desc))))]);
         break;
       case 'me': if (!rest) throw new Error('Try /me waves.'); await say(rest, { kind: 'me' }); break;
+      case 'gif':
+        if (!S.gifs) throw new Error('GIFs aren\u2019t set up on this Hearth yet. The admin adds a GIPHY key to turn them on.');
+        gifPicker(rest); break;
       case 'shrug': await say(`${rest} ¯\\_(ツ)_/¯`.trim()); break;
       case 'tableflip': await say(`${rest} (╯°□°)╯︵ ┻━┻`.trim()); break;
       case 'unflip': await say(`${rest} ┬─┬ノ( º _ ºノ)`.trim()); break;
@@ -2872,5 +2879,83 @@ function importWizard() {
     if (live) progress(live); else intro();
   }).catch(() => intro());
 }
+
+
+// ================================================================ GIFs (GIPHY)
+// GIPHY's rules: search and GIFs load straight from GIPHY in the app (no
+// copying or proxying through Hearth), results aren't reordered, and
+// "Powered by GIPHY" is shown. Hearth only stores the GIF's address.
+const gifsOn = () => pref('hearth_gifs', 'on') !== 'off';
+function gifToggle() {
+  const cb = el('input', { type: 'checkbox', checked: gifsOn() });
+  cb.onchange = () => { try { localStorage.setItem('hearth_gifs', cb.checked ? 'on' : 'off'); } catch { /* ignore */ } if (S.channelId) renderMessages({ keepScroll: true }); };
+  return cb;
+}
+
+function gifBody(m) {
+  const box = el('div', { class: 'body gif-body' });
+  const show = () => box.replaceChildren(el('img', { class: 'gif', src: m.content, alt: 'GIF', loading: 'lazy', referrerpolicy: 'no-referrer' }));
+  if (gifsOn() || S.revealed.has(m.id)) show();
+  else box.append(el('button', { class: 'gif-placeholder', title: 'Loads from GIPHY', onclick: () => { S.revealed.add(m.id); show(); } }, '▶ GIF · tap to load'));
+  return box;
+}
+
+let gifPop = null;
+function gifPicker(initial = '') {
+  if (!S.gifs || !S.channelId) return;
+  if (gifPop) { gifPop.close(); }
+  const chan = findChannel(S.channelId);
+  const srv = server();
+  const adult = Math.max(chan.ageRating || 0, (srv && srv.ageRating) || 0) >= 18;
+  const q = el('input', { type: 'search', placeholder: 'Search GIPHY', value: initial, maxlength: 50, autocomplete: 'off' });
+  const grid = el('div', { class: 'gif-grid' });
+  const status = el('div', { class: 'muted small gif-status' });
+  const more = el('button', { class: 'btn small', style: { display: 'none' } }, 'More');
+  let offset = 0; let timer = null; let seq = 0;
+  const load = async (append) => {
+    const mine = ++seq;
+    const term = q.value.trim();
+    const params = new URLSearchParams({ api_key: S.gifs.key, limit: '24', offset: String(append ? offset : 0), rating: adult ? 'r' : 'pg-13', bundle: 'messaging_non_clips' });
+    if (term) params.set('q', term);
+    status.textContent = 'Loading…';
+    try {
+      const res = await fetch(`https://api.giphy.com/v1/gifs/${term ? 'search' : 'trending'}?${params}`, { referrerPolicy: 'no-referrer', credentials: 'omit' });
+      if (res.status === 429) throw new Error('GIF search is busy right now. Try again in a little while.');
+      if (!res.ok) throw new Error('GIF search isn’t working right now.');
+      const data = await res.json();
+      if (mine !== seq) return;
+      if (!append) { grid.replaceChildren(); offset = 0; grid.scrollTop = 0; }
+      offset += data.data.length;
+      for (const g of data.data) {
+        const thumb = g.images.fixed_width_small || g.images.fixed_width;
+        const send = g.images.fixed_height || g.images.downsized || g.images.original;
+        grid.append(el('button', { class: 'gif-cell', title: g.title || 'GIF', onclick: () => pick(send.url) },
+          el('img', { src: thumb.webp || thumb.url, alt: g.title || 'GIF', loading: 'lazy', referrerpolicy: 'no-referrer' })));
+      }
+      status.textContent = data.data.length || append ? '' : 'No GIFs found.';
+      more.style.display = data.pagination && offset < Math.min(data.pagination.total_count, 4999) ? '' : 'none';
+    } catch (e) { if (mine === seq) status.textContent = e.message; }
+  };
+  const pick = async (url) => {
+    close();
+    const replyTo = S.replyTo ? S.replyTo.id : undefined;
+    S.replyTo = null; renderComposerExtras();
+    try { await api('POST', `/channels/${chan.id}/messages`, { content: url, kind: 'gif', replyTo }); } catch (e) { toast(e.message); }
+  };
+  q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => load(false), 500); });
+  q.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); load(false); } });
+  more.onclick = () => load(true);
+  const pop = el('div', { class: 'gif-pop', role: 'dialog', 'aria-label': 'GIF picker' },
+    el('div', { class: 'gif-top' }, q, el('button', { class: 'icon-btn', title: 'Close', onclick: () => close() }, '✕')),
+    grid, status, el('div', { class: 'gif-foot' }, more, el('span', { class: 'spacer' }), el('span', { class: 'giphy-attr' }, 'Powered by GIPHY')));
+  const outside = (e) => { if (!pop.contains(e.target) && e.target.id !== 'gif-btn') close(); };
+  function close() { pop.remove(); document.removeEventListener('mousedown', outside); gifPop = null; }
+  $('composer').append(pop);
+  setTimeout(() => document.addEventListener('mousedown', outside), 0);
+  gifPop = { close };
+  q.focus();
+  load(false);
+}
+$('gif-btn').addEventListener('click', () => (gifPop ? gifPop.close() : gifPicker()));
 
 boot();

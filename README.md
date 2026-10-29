@@ -95,7 +95,12 @@ All optional, set as environment variables.
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | | Email provider for verification and password resets (TLS required) |
 | `VAULT_DAYS` | `30` | How long encrypted copies of deleted content are kept |
 | `MAIL_DEV` | `false` | Testing only: print emails to the log instead of sending |
+| `GIPHY_API_KEY` | | Turns on GIF search (`/gif` and the GIF button). Free key from developers.giphy.com; see below |
+| `IMPORT_MAX_GB` | `5` | Most file data one Discord import may copy |
+| `IMPORT_MAX_JOBS` | `2` | Discord imports that can run at once |
 | `TRUST_PROXY` | `false` | Set `true` only behind your own reverse proxy, so rate limits see real visitor addresses |
+
+**GIFs:** create an app at developers.giphy.com, copy its API key into `GIPHY_API_KEY`, and restart. New keys are "beta" keys limited to about 100 searches an hour for the whole site, which is fine for testing; before launching, apply for a production key in GIPHY's dashboard. GIPHY's rules require GIFs and searches to load straight from GIPHY on each device (Hearth can't copy or proxy them) and "Powered by GIPHY" to be shown, which the picker does. (Google shut down the Tenor GIF API in June 2026, so GIPHY is used instead.)
 
 Security details are in [SECURITY.md](SECURITY.md).
 

@@ -165,6 +165,7 @@ function ready(session) {
       dms: dmIds.map(ser.dmChannel),
       dmVoiceStates: dmIds.flatMap(state.voiceStatesForChannel),
       iceServers: config.iceServers,
+      gifs: config.giphyKey ? { provider: 'giphy', key: config.giphyKey } : null,
       blocked: all('SELECT blocked_id FROM blocks WHERE user_id = ?', u.id).map((r) => r.blocked_id),
     },
   });

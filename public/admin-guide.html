@@ -27,6 +27,7 @@
     <a href="#ownership">9. Ownership and deleting</a>
     <a href="#rules">10. Your responsibilities</a>
     <a href="#platform">11. Hearth admins (site operators)</a>
+    <a href="#import">12. Moving a server from Discord</a>
   </nav>
 
   <h2 id="quickstart">1. Quick setup checklist</h2>
@@ -54,7 +55,8 @@
 
   <h2 id="channels">3. Channels</h2>
   <ul>
-    <li><strong>Create:</strong> tap <strong>+</strong> next to "Text channels" or "Voice channels". <strong>Edit:</strong> hover a channel and tap its ⚙.</li>
+    <li><strong>Create:</strong> tap <strong>+</strong> next to "Text channels" or "Voice channels", or next to a category to create a channel inside it. <strong>Edit:</strong> hover a channel and tap its ⚙.</li>
+    <li><strong>Categories:</strong> tap <em>+ New category</em> at the bottom of the channel list. Put a channel in a category from the channel's ⚙. Tap a category name to fold it up. Deleting a category keeps its channels.</li>
     <li><strong>Topic:</strong> a short line shown at the top of a text channel.</li>
     <li><strong>Slowmode:</strong> each person can post once every 5 seconds up to once an hour. Moderators aren't limited. Quick version: <code>/slowmode 10</code> or <code>/slowmode off</code>.</li>
     <li><strong>Who can view it:</strong>
@@ -64,8 +66,14 @@
         <li><em>21+ only</em>: for alcohol, cannabis or gambling content where the law requires it.</li>
       </ul>
     </li>
-    <li><strong>Private:</strong> only the roles you tick can see the channel. Everyone else won't even know it exists.</li>
-    <li><strong>Read-only:</strong> everyone can read, but only the roles you tick can post. Great for #rules and #announcements.</li>
+    <li><strong>Private channel:</strong> tick it and only roles you allow (plus the owner and Administrators) can see the channel. Everyone else won't even know it exists.</li>
+    <li><strong>Permissions per role</strong> (like Discord): pick a role on the left (or <em>+ Add a role</em>), then set each permission to <strong>✓ Allow</strong>, <strong>✕ Deny</strong>, or <strong>/</strong> (use what the role normally has).
+      <ul>
+        <li><em>Read-only channel</em> (#rules, #announcements): @everyone → Send messages ✕; your Mods role → Send messages ✓.</li>
+        <li><em>Staff-only channel</em>: tick Private channel, then Staff role → View channel ✓.</li>
+        <li>How it adds up: a Deny on @everyone is overridden by an Allow on any role the person has. Owners and Administrators always get in.</li>
+      </ul>
+    </li>
     <li><strong>Delete:</strong> the channel's ⚙ → <em>Delete</em>. You'll type its name to confirm. Messages disappear for everyone right away (see <a href="#ownership">section 9</a> for how deletion works).</li>
   </ul>
 
@@ -160,6 +168,33 @@
   <p class="muted">Legal questions about a specific situation (subpoenas, court orders, emergency requests) should go to a lawyer.</p>
 
   <p class="muted"><a href="/">Back to Hearth</a> · <a href="/help.html">Getting Started guide</a> · <a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a></p>
+  <h2 id="import">12. Moving a server from Discord</h2>
+  <p>Tap <strong>+</strong> in the server list → <strong>Move a server from Discord</strong>. The wizard walks you through it. In short:</p>
+  <ol>
+    <li><strong>Create a bot</strong> in the Discord Developer Portal, turn on <em>Message Content Intent</em>, and copy its token. Hearth keeps the token only in memory while copying and never saves it.</li>
+    <li><strong>Add the bot</strong> to your Discord server with the invite link the wizard gives you (it can only view channels and read history). For private channels, give the bot access to them, or give it Administrator just for the move.</li>
+    <li><strong>Choose what comes over.</strong> Every channel is created; for each text channel, choose whether to <em>Bring messages</em>. Keep history for useful channels (rules, guides) and start noisy ones blank. You can also skip files or only bring messages after a date.</li>
+    <li><strong>Confirm and start.</strong> You can close the window; it keeps going. If Hearth restarts mid-way, open the wizard again and paste the token to continue where it stopped.</li>
+  </ol>
+  <h3>What transfers</h3>
+  <ul>
+    <li>Server name and icon; categories, text and voice channels in order, with topics, slowmode and 18+ flags.</li>
+    <li>Roles with their names, colors, order and the matching Hearth permissions. Roles that belong to Discord bots are skipped. If @everyone had Administrator on Discord, it's left off here for safety.</li>
+    <li>Role permissions on each channel (private and read-only channels stay that way).</li>
+    <li>Chat history for the channels you picked: text, replies, files, embeds (as text), and reaction counts. Mentions become plain names.</li>
+  </ul>
+  <h3>What doesn't</h3>
+  <ul>
+    <li>Members. People join with an invite and start fresh. Old messages keep the sender's name and picture with an <em>ARCHIVED</em> tag, but they belong to no Hearth account, even if someone with the same name joins later. Nobody can edit or claim them; moderators can delete them.</li>
+    <li>Bots and their commands, webhooks, threads, forum and media channels, pins, custom emoji (shown as <code>:name:</code>), per-person channel permissions, and DMs.</li>
+  </ul>
+  <h3>After the move</h3>
+  <ol>
+    <li><strong>Imported channels start hidden</strong> from everyone except you and Administrators, marked <em>HIDDEN</em>. Use <em>Review channels</em> at the top of the channel list: check the roles, set each channel's permissions, then <em>Open</em> it (or <em>Open all</em>).</li>
+    <li><strong>Retire the bot:</strong> reset its token in the Developer Portal (or delete the app) and remove it from your Discord server.</li>
+    <li><strong>Invite people</strong> and give them roles as they arrive.</li>
+  </ol>
+  <p class="muted">You're responsible for imported content like anything else in your server. Only move servers you own or run, and let your members know their messages are being copied.</p>
 </main>
 </body>
 </html>

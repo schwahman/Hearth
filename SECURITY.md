@@ -84,3 +84,17 @@ Every use is written to the admin log as "server-console".
 - The master encryption key lives on the same server as the database; it protects copied database files, not a fully compromised server.
 - Automated CSAM hash-matching (e.g. PhotoDNA) requires applying to the provider; reports are currently reviewed by people.
 - Rate limits are per server node; a multi-node setup should share them.
+
+## Discord import
+
+- The Discord bot token is sent with each wizard step and held only in memory while an import runs. It's never written to the database, logs or disk, and is dropped when the import finishes or stops. The wizard tells owners to reset it afterwards.
+- Only bot tokens are accepted (user tokens break Discord's rules). The bot only needs View Channels and Read Message History.
+- Files are downloaded only from Discord's own CDN hosts, with size limits per file and per import.
+- Imported messages belong to a locked system account (`discord-archive`) that can't sign in, be messaged, or be suspended, and whose name can't be registered. They're never attached to a real account.
+- Imported channels are hidden from everyone except the owner and Administrators until reviewed.
+
+## GIFs
+
+- GIF search runs in the browser straight against GIPHY, as GIPHY's terms require; the API key is shared with signed-in clients (normal for GIPHY). The CSP allows only `api.giphy.com` and `*.giphy.com` media in addition to Hearth itself.
+- The server accepts a GIF message only if it's a `media*.giphy.com` address, and GIF messages can't be edited into something else.
+- People can turn off automatic GIF loading so GIPHY isn't contacted until they tap a GIF.

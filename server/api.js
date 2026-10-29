@@ -767,6 +767,7 @@ route('GET', '/api/channels/:id/messages', ({ user, params, query }) => {
   return ser.messages(rows.reverse(), user.id);
 });
 
+const GIF_URL = /^https:\/\/media[0-9]*\.giphy\.com\/[A-Za-z0-9_\-./?=&%]+$/;
 route('POST', '/api/channels/:id/messages', ({ user, params, body }) => {
   const { channel, perms } = channelAccess(params.id, user.id, P.SEND_MESSAGES);
   if (channel.type === 'voice' || channel.type === 'category') throw new HttpError(400, 'You can\u2019t post in that channel.');
@@ -779,6 +780,11 @@ route('POST', '/api/channels/:id/messages', ({ user, params, body }) => {
     return { url, name: String(a.name || 'file').slice(0, 128), size: Number(a.size) || 0, type: String(a.type || '') };
   });
   if (!content && !clean.length) throw new HttpError(400, 'Message is empty.');
+  // A GIF picked from GIPHY: the message is just the GIF's address, which
+  // must be GIPHY's own (GIFs load from GIPHY; Hearth doesn't copy them).
+  const isGif = body.kind === 'gif';
+  if (isGif && !GIF_URL.test(content)) throw new HttpError(400, 'That isn\u2019t a GIF from the GIF picker.');
+  if (isGif && !has(perms, P.ATTACH_FILES)) throw new HttpError(403, 'You cannot post GIFs here.');
   // Slowmode: one message per N seconds, unless you can manage messages.
   if (channel.slowmode && !has(perms, P.MANAGE_MESSAGES) && !has(perms, P.MANAGE_CHANNELS)) {
     const last = one('SELECT MAX(created_at) AS t FROM messages WHERE channel_id = ? AND author_id = ?', channel.id, user.id).t;
@@ -799,7 +805,7 @@ route('POST', '/api/channels/:id/messages', ({ user, params, body }) => {
   const id = newId();
   run(`INSERT INTO messages (id, channel_id, author_id, content, attachments, reply_to, created_at, kind)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, channel.id, user.id, content,
-    clean.length ? JSON.stringify(clean) : null, replyTo, Date.now(), body.kind === 'me' ? 'me' : null);
+    clean.length ? JSON.stringify(clean) : null, replyTo, Date.now(), body.kind === 'me' ? 'me' : isGif ? 'gif' : null);
   const msg = ser.message(id, user.id);
   bus.publish(topicFor(channel), { t: 'MESSAGE_CREATE', d: { ...msg, serverId: channel.server_id } });
   return msg;
@@ -810,6 +816,7 @@ route('PATCH', '/api/messages/:id', ({ user, params, body }) => {
   if (!m) throw new HttpError(404, 'Message not found.');
   const { channel } = channelAccess(m.channel_id, user.id);
   if (m.author_id !== user.id) throw new HttpError(403, 'You can only edit your own messages.');
+  if (m.kind) throw new HttpError(400, 'This kind of message can\u2019t be edited.');
   const content = str(body.content, 'Message', 1, config.maxMessageLength);
   if (content !== m.content) {
     vault.store({

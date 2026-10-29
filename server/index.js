@@ -22,8 +22,8 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'no-referrer',
   'X-Frame-Options': 'DENY',
   'Content-Security-Policy':
-    "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; " +
-    "connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+    "default-src 'self'; img-src 'self' blob: data: https://*.giphy.com; media-src 'self' blob: https://*.giphy.com; " +
+    "connect-src 'self' ws: wss: https://api.giphy.com; style-src 'self' 'unsafe-inline'; script-src 'self'",
 };
 
 function serveStatic(req, res) {

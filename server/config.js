@@ -23,6 +23,10 @@ module.exports = {
   tlsPfxPass: process.env.TLS_PFX_PASS || '',
   // ICE servers handed to clients for voice/video. Empty works on a LAN.
   // For callers across the internet, point this at a STUN/TURN server.
+  // GIF search (GIPHY). Get a key at developers.giphy.com. GIPHY's rules
+  // require searches and GIFs to load straight from GIPHY in each person's
+  // app, so the key is shared with signed-in clients (that's normal for it).
+  giphyKey: process.env.GIPHY_API_KEY || '',
   iceServers: process.env.ICE_SERVERS ? JSON.parse(process.env.ICE_SERVERS) : [],
   // Set to "false" to stop new people signing up (invite-only community).
   openRegistration: process.env.OPEN_REGISTRATION !== 'false',
