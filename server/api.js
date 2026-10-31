@@ -360,6 +360,23 @@ route('POST', '/api/users/@me/email', async ({ user, body }) => {
 route('POST', '/api/users/@me/email/confirm', ({ user, body }) => { auth.confirmEmailChange(user.id, body.code); return auth.accountSecurity(user.id); });
 route('POST', '/api/users/@me/recovery-codes', async ({ user, body }) => ({ codes: await auth.generateRecoveryCodes(user.id, body.password) }));
 
+// Change your username (once every 30 days; your password is required).
+route('POST', '/api/users/@me/username', async ({ user, body }) => {
+  const r = await auth.changeUsername(user.id, body.username, body.password);
+  activity.record('user.rename', { userId: user.id, detail: { from: r.oldName, username: r.username } });
+  publishUser(user.id);
+  return { ...ser.me(user.id), nextUsernameChange: r.nextChange };
+});
+
+function publishUser(userId) {
+  const updated = ser.user(one('SELECT * FROM users WHERE id = ?', userId));
+  for (const s of all('SELECT server_id FROM members WHERE user_id = ?', userId)) {
+    bus.publish(`server:${s.server_id}`, { t: 'USER_UPDATE', d: updated });
+  }
+  bus.publish(`user:${userId}`, { t: 'USER_UPDATE', d: updated });
+  return updated;
+}
+
 route('PATCH', '/api/users/@me', ({ user, body }) => {
   if (body.displayName !== undefined) {
     run('UPDATE users SET display_name = ? WHERE id = ?', str(body.displayName, 'Display name', 1, 32), user.id);
@@ -1438,6 +1455,17 @@ route('POST', '/api/admin/users/:id/reveal-email', ({ user, params, body }) => {
   if (!u) throw new HttpError(404, 'User not found.');
   vault.logAccess(user.id, 'user.reveal_email', params.id, reason);
   return { email: u.email_enc ? secrets.decryptText('email', u.email_enc) : null };
+});
+
+route('POST', '/api/admin/users/:id/username', async ({ user, params, body }) => {
+  requireAdmin(user);
+  const reason = String(body.reason || '').trim();
+  if (!reason) throw new HttpError(400, 'Give a reason (it\u2019s recorded in the admin log).');
+  if (one('SELECT 1 FROM users WHERE id = ? AND is_system = 1', params.id)) throw new HttpError(400, 'That\u2019s a system account.');
+  const r = await auth.changeUsername(params.id, body.username, null, { byAdmin: true });
+  vault.logAccess(user.id, 'user.rename', params.id, `${r.oldName} -> ${r.username}: ${reason.slice(0, 300)}`);
+  publishUser(params.id);
+  return { username: r.username };
 });
 
 route('POST', '/api/admin/users/:id/suspend', ({ user, params, body }) => {

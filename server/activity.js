@@ -17,6 +17,7 @@ const LABELS = {
   'server.delete': 'Server deleted',
   'member.join': 'Joined a server',
   'user.delete': 'Account deleted',
+  'user.rename': 'Username changed',
 };
 // What's worth an email right away (joins only go in the daily summary).
 const ALERT_NOW = new Set(['user.register', 'server.create', 'server.import']);
@@ -119,6 +120,7 @@ function describe(a) {
     case 'server.delete': return `The server "${d.name}" was deleted`;
     case 'member.join': return `@${d.username} joined "${d.server}"`;
     case 'user.delete': return 'An account was deleted';
+    case 'user.rename': return `@${d.from} is now @${d.username}`;
     default: return a.label;
   }
 }

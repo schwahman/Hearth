@@ -355,6 +355,17 @@ CREATE TABLE IF NOT EXISTS admin_log (
 );
 `);
 
+// Username changes: once every 30 days, and an old name is held for 30
+// days so nobody else can grab it to impersonate the person who left it.
+addColumn('users', 'username_changed_at', 'INTEGER');
+db.exec(`
+CREATE TABLE IF NOT EXISTS username_holds (
+  username TEXT PRIMARY KEY COLLATE NOCASE,
+  user_id  TEXT NOT NULL,
+  until    INTEGER NOT NULL
+);
+`);
+
 // Sign-ups, new servers, joins and imports, for the Hearth admin Activity
 // feed and email alerts. Kept 30 days (see activity.js).
 db.exec(`

@@ -1298,8 +1298,10 @@ function profileModal() {
   const dlg = modal([
     el('h2', {}, 'Your profile'),
     el('div', { style: { display: 'flex', gap: '14px', alignItems: 'center' } }, avatar(S.me, { size: 64 }),
-      el('div', {}, el('strong', {}, '@' + S.me.username))),
-    lbl, el('label', {}, 'Avatar image', pic),
+      el('div', {}, el('strong', {}, '@' + S.me.username),
+        el('div', {}, el('button', { class: 'btn small', style: { marginTop: '4px' }, onclick: () => { dlg.close(); usernameModal(); } }, 'Change username')))),
+    lbl,
+    el('p', { class: 'muted small', style: { margin: '-8px 0 0' } }, 'Your display name is what people see in chat; change it any time. Your username is how people find and @mention you.'), el('label', {}, 'Avatar image', pic),
     el('label', {}, 'Appearance', themePicker()),
     el('label', { class: 'check' }, soundToggle(), 'Retro sound effects'),
     S.gifs ? el('label', { class: 'check' }, gifToggle(), 'Show GIFs automatically (they load from GIPHY, which can see your IP address; when off, tap a GIF to load it)') : null,
@@ -2187,6 +2189,11 @@ async function adminUsers() {
         const why = await askReason('Reset date of birth', 'Reason, e.g. user proved a typo with ID'); if (!why) return;
         await api('POST', `/admin/users/${u.id}/birthdate-reset`, { reason: why }).catch((e) => toast(e.message)); toast('Birth date cleared; they can set it again.');
       } }, 'Reset DOB'),
+      el('button', { class: 'btn', onclick: async () => {
+        const why = await askReason(`Rename @${u.username}`, 'Reason, e.g. offensive or impersonating username'); if (!why) return;
+        const n = await askReason('New username', 'Letters, numbers, dots or underscores'); if (!n) return;
+        try { await api('POST', `/admin/users/${u.id}/username`, { username: n, reason: why }); toast(`Renamed to @${n}.`); draw(); } catch (e) { toast(e.message); }
+      } }, 'Rename'),
       u.id === S.me.id ? null : el('button', { class: 'btn', onclick: async () => {
         await api('POST', `/admin/users/${u.id}/admin`, { isAdmin: !u.isAdmin }).catch((e) => toast(e.message)); draw();
       } }, u.isAdmin ? 'Remove admin' : 'Make admin'),
@@ -2988,10 +2995,11 @@ function activityText(a) {
     case 'server.delete': return `Server "${d.name}" was deleted`;
     case 'member.join': return `@${d.username} joined "${d.server}"`;
     case 'user.delete': return 'An account was deleted';
+    case 'user.rename': return `@${d.from} changed their username to @${d.username}`;
     default: return a.label || a.kind;
   }
 }
-const ACTIVITY_ICON = { 'user.register': '★', 'server.create': '■', 'server.import': '⇨', 'server.delete': '✖', 'member.join': '→', 'user.delete': '✖' };
+const ACTIVITY_ICON = { 'user.rename': '✎', 'user.register': '★', 'server.create': '■', 'server.import': '⇨', 'server.delete': '✖', 'member.join': '→', 'user.delete': '✖' };
 
 async function adminActivity() {
   const data = await api('GET', '/admin/activity');
@@ -3054,6 +3062,39 @@ async function adminServers() {
   await load();
   return el('div', { style: { display: 'grid', gap: '10px' } }, q, list,
     el('p', { class: 'muted small', style: { margin: 0 } }, 'Names and sizes only. Message content is only opened through a report or the retention vault, and is logged.'));
+}
+
+
+// Usernames can change once every 30 days; display names any time.
+function usernameModal() {
+  const next = S.me.nextUsernameChange || 0;
+  const waiting = next > Date.now();
+  const [lblU, uname] = field('New username', { value: S.me.username, maxlength: 32, autocomplete: 'off', spellcheck: 'false', disabled: waiting });
+  const [lblP, pw] = field('Your password', { type: 'password', autocomplete: 'current-password', disabled: waiting });
+  const err = el('p', { class: 'error' });
+  const hint = el('p', { class: 'muted small', style: { margin: 0 } });
+  const check = () => {
+    const v = uname.value.trim();
+    hint.textContent = !/^[a-zA-Z0-9_.]{2,32}$/.test(v) ? '2–32 letters, numbers, dots or underscores.' : v === S.me.username ? '' : `People will find and @mention you as @${v}.`;
+  };
+  uname.addEventListener('input', check); check();
+  const save = async () => {
+    err.textContent = '';
+    try {
+      const me = await api('POST', '/users/@me/username', { username: uname.value.trim(), password: pw.value });
+      S.me = { ...S.me, ...me }; renderMe(); dlg.close();
+      toast(`You’re now @${me.username}.`);
+    } catch (e) { err.textContent = e.message; if (e.data && e.data.field === 'password') pw.focus(); }
+  };
+  pw.addEventListener('keydown', (e) => e.key === 'Enter' && save());
+  const dlg = modal([
+    el('h2', {}, 'Change username'),
+    waiting ? el('div', { class: 'wiz-box warn' }, `You changed your username recently. You can change it again on ${new Date(next).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}.`)
+      : el('p', { class: 'muted small', style: { margin: 0 } }, `You can change your username once every 30 days. Your old name (@${S.me.username}) is held for 30 days so nobody else can take it. Old messages update to your new name.`),
+    lblU, hint, lblP, err,
+    el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => dlg.close() }, waiting ? 'Close' : 'Cancel'),
+      waiting ? null : el('button', { class: 'btn primary', onclick: save }, 'Change username')),
+  ]);
 }
 
 boot();

@@ -635,6 +635,23 @@ async function main() {
   assert.match(alertMail, /subject="Hearth: 1 \u00D7 New account"/);
   ok('admins can get an email when someone signs up or creates a server');
 
+  // ---------------- username changes ----------------
+  const RN = (await req('POST', '/auth/register', { acceptTerms: true, username: 'renamer', password: 'swap names phrase 6', returnToken: true })).data.token;
+  assert.equal((await req('POST', '/users/@me/username', { username: 'renamed1', password: 'wrong password here' }, RN)).status, 403);
+  assert.equal((await req('POST', '/users/@me/username', { username: 'Support', password: 'swap names phrase 6' }, RN)).status, 400);
+  assert.equal((await req('POST', '/users/@me/username', { username: 'joiner', password: 'swap names phrase 6' }, RN)).status, 409);
+  const rn = await req('POST', '/users/@me/username', { username: 'renamed1', password: 'swap names phrase 6' }, RN);
+  assert.equal(rn.status, 200); assert.equal(rn.data.username, 'renamed1'); assert.ok(rn.data.nextUsernameChange > Date.now() + 29 * 86400000);
+  const again = await req('POST', '/users/@me/username', { username: 'renamed2', password: 'swap names phrase 6' }, RN);
+  assert.equal(again.status, 429); assert.match(again.data.error, /again on/);
+  assert.equal((await req('POST', '/auth/register', { acceptTerms: true, username: 'Renamer', password: 'grab old name phrase 7' })).status, 409);
+  assert.equal((await req('POST', '/auth/login', { username: 'renamed1', password: 'swap names phrase 6' })).status, 200);
+  const rnId = (await req('GET', '/users/@me', null, RN)).data.id;
+  assert.equal((await req('POST', `/admin/users/${rnId}/username`, { username: 'cleanname' }, OW)).status, 400); // reason needed
+  assert.equal((await req('POST', `/admin/users/${rnId}/username`, { username: 'cleanname', reason: 'test' }, OW)).data.username, 'cleanname');
+  assert.ok((await req('GET', '/admin/activity', null, OW)).data.items.some((i) => i.kind === 'user.rename' && i.detail.username === 'renamed1'));
+  ok('usernames change once every 30 days with a password; old names are held; reserved names refused');
+
   cu.ws.close();
   ca.ws.close(); cb.ws.close();
   console.log(`\nAll ${passed} checks passed.`);

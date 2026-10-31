@@ -22,7 +22,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { promisify } = require('node:util');
-const { one, all, run } = require('./db');
+const { one, all, run, tx } = require('./db');
 const { newId } = require('./ids');
 const secrets = require('./secrets');
 const mailer = require('./mailer');
@@ -449,9 +449,7 @@ async function register(username, password, displayName, meta, acceptedTerms, em
   if (made && Date.now() < made.reset && made.n >= 5 * SCALE) {
     throw new HttpError(429, 'Too many new accounts from this network. Try again later.');
   }
-  if (!/^[a-zA-Z0-9_.]{2,32}$/.test(username || '')) {
-    throw new HttpError(400, 'Username must be 2-32 letters, numbers, dots or underscores.');
-  }
+  checkUsername(username);
   checkPasswordRules(password, username);
   if (acceptedTerms !== true) {
     throw new HttpError(400, 'Please confirm you are at least 13 and agree to the Terms and Privacy Policy.');
@@ -461,9 +459,7 @@ async function register(username, password, displayName, meta, acceptedTerms, em
   if (one('SELECT 1 FROM users WHERE email_hash = ?', emailHash(normEmail))) {
     throw new HttpError(409, 'That email address is already used by another account.');
   }
-  if (one('SELECT 1 FROM users WHERE username = ?', username)) {
-    throw new HttpError(409, 'That username is taken.');
-  }
+  usernameFree(username, null);
   const hash = await hashPassword(password);
   const id = newId();
   hit(`regok:${meta.ip}`, 5, 3600 * 1000);
@@ -477,6 +473,59 @@ async function register(username, password, displayName, meta, acceptedTerms, em
   run('UPDATE users SET birthdate_enc = ? WHERE id = ?', secrets.encryptText('birthdate', dob), id);
   sendCode(id, 'verify', normEmail).catch((e) => console.warn('[mail] verification email failed:', e.message));
   return { id, token: createSession(id, meta) };
+}
+
+// ---------- usernames ----------
+const USERNAME_DAYS = 30;
+// Names that could be used to pretend to be Hearth staff.
+const RESERVED = new Set(['admin', 'administrator', 'hearth', 'hearthadmin', 'support', 'moderator', 'mod', 'mods', 'system',
+  'staff', 'official', 'help', 'security', 'root', 'owner', 'everyone', 'here', 'safety', 'trustandsafety']);
+function checkUsername(username) {
+  if (!/^[a-zA-Z0-9_.]{2,32}$/.test(username || '')) {
+    throw new HttpError(400, 'Username must be 2-32 letters, numbers, dots or underscores.');
+  }
+  if (RESERVED.has(username.toLowerCase().replace(/[._]/g, ''))) throw new HttpError(400, 'That username is reserved. Please choose another.');
+}
+function usernameFree(username, userId) {
+  const taken = one('SELECT id FROM users WHERE username = ?', username);
+  if (taken && taken.id !== userId) throw new HttpError(409, 'That username is taken.');
+  const held = one('SELECT user_id FROM username_holds WHERE username = ? AND until > ?', username, Date.now());
+  if (held && held.user_id !== userId) throw new HttpError(409, 'That username is taken.');
+}
+// When this person may change their username next (0 = now).
+function nextUsernameChange(userId) {
+  const r = one('SELECT username_changed_at FROM users WHERE id = ?', userId);
+  return r && r.username_changed_at ? r.username_changed_at + USERNAME_DAYS * 86400000 : 0;
+}
+
+// byAdmin: a Hearth admin renaming someone (e.g. an offensive name) skips
+// the password and the 30-day limit, and doesn't use up the person's change.
+async function changeUsername(userId, newName, password, { byAdmin = false } = {}) {
+  newName = String(newName || '').trim();
+  const u = one('SELECT username, password_hash FROM users WHERE id = ?', userId);
+  if (!u) throw new HttpError(404, 'User not found.');
+  if (!byAdmin) {
+    hit(`rename:${userId}`, 10, 3600 * 1000);
+    const { ok } = await verifyPassword(String(password || ''), u.password_hash);
+    if (!ok) { const e = new HttpError(403, 'Your password is incorrect.'); e.extra = { field: 'password' }; throw e; }
+    const next = nextUsernameChange(userId);
+    if (next > Date.now()) {
+      throw new HttpError(429, `You can change your username again on ${new Date(next).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}.`);
+    }
+  }
+  if (newName === u.username) throw new HttpError(400, 'That\u2019s already your username.');
+  checkUsername(newName);
+  usernameFree(newName, userId);
+  const now = Date.now();
+  tx(() => {
+    run('DELETE FROM username_holds WHERE until <= ? OR username = ?', now, newName);
+    // Hold the old name; only a case-only change (josh -> Josh) keeps nothing to hold.
+    if (u.username.toLowerCase() !== newName.toLowerCase()) {
+      run('INSERT OR REPLACE INTO username_holds (username, user_id, until) VALUES (?, ?, ?)', u.username, userId, now + USERNAME_DAYS * 86400000);
+    }
+    run(`UPDATE users SET username = ?${byAdmin ? '' : ', username_changed_at = ?'} WHERE id = ?`, ...(byAdmin ? [newName, userId] : [newName, now, userId]));
+  });
+  return { oldName: u.username, username: newName, nextChange: byAdmin ? nextUsernameChange(userId) : now + USERNAME_DAYS * 86400000 };
 }
 
 async function login(username, password, meta) {
@@ -516,4 +565,5 @@ module.exports = {
   register, login, changePassword, resendVerification, verifyEmail, requestEmailChange, confirmEmailChange,
   forgotPassword, resetPassword, generateRecoveryCodes, accountSecurity, userEmail, hit, setBirthdate, createSession, userFromToken, revokeSession, revokeAllSessions,
   listSessions, revokeSessionById, hashPassword, verifyPassword, hashToken, HttpError, PASSWORD_MIN,
+  changeUsername, nextUsernameChange, USERNAME_DAYS,
 };
