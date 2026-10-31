@@ -5,7 +5,7 @@ const state = require('./state');
 const { channelPermissions, memberPermissions, ageBlock, ageOf, P } = require('./permissions');
 
 function user(row) {
-  return { id: row.id, username: row.username, displayName: row.display_name, avatar: row.avatar || null };
+  return { id: row.id, username: row.username, tag: row.tag || '0000', displayName: row.display_name, avatar: row.avatar || null };
 }
 
 function channel(row) {
@@ -30,7 +30,7 @@ function role(row) {
 
 function member(serverId, userId) {
   const row = one(
-    `SELECT u.id, u.username, u.display_name, u.avatar, m.nickname, m.joined_at, m.timeout_until
+    `SELECT u.id, u.username, u.tag, u.display_name, u.avatar, m.nickname, m.joined_at, m.timeout_until
      FROM members m JOIN users u ON u.id = m.user_id
      WHERE m.server_id = ? AND m.user_id = ?`, serverId, userId);
   if (!row) return null;
@@ -52,7 +52,7 @@ function server(serverId, viewerId) {
   const s = one('SELECT * FROM servers WHERE id = ?', serverId);
   if (!s) return null;
   const members = all(
-    `SELECT u.id, u.username, u.display_name, u.avatar, m.nickname, m.joined_at, m.timeout_until
+    `SELECT u.id, u.username, u.tag, u.display_name, u.avatar, m.nickname, m.joined_at, m.timeout_until
      FROM members m JOIN users u ON u.id = m.user_id WHERE m.server_id = ?`, serverId)
     .map((r) => memberFromRow(serverId, r));
   let rows = all('SELECT * FROM channels WHERE server_id = ? ORDER BY position, id', serverId);

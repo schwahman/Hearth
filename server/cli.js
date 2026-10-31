@@ -2,7 +2,7 @@
 // hosting provider's web console). Only someone with root access to the
 // machine can use it, which is what makes it safe.
 //
-//   hearth-admin reset-password <username>   set a new temporary password
+//   hearth-admin reset-password <username>   (josh or josh#4821) set a new temporary password
 //   hearth-admin make-admin <username>        give Hearth admin rights
 //   hearth-admin list-admins                  show who is an admin
 //   hearth-admin unsuspend <username>         lift an account suspension
@@ -28,9 +28,14 @@ const { newId } = require('./ids');
 
 function findUser() {
   if (!username) { console.error('Give a username, e.g. hearth-admin reset-password josh'); process.exit(1); }
-  const u = one('SELECT id, username FROM users WHERE username = ?', username);
-  if (!u) { console.error(`No account named "${username}".`); process.exit(1); }
-  return u;
+  const found = require('./auth').findByHandle(username, 'AND is_system = 0');
+  if (found.ambiguous) {
+    console.error(`More than one account is named "${username}". Use the full name with its number:`);
+    for (const r of all('SELECT username, tag FROM users WHERE username = ? AND is_system = 0', username.split('#')[0])) console.error(`  ${r.username}#${r.tag}`);
+    process.exit(1);
+  }
+  if (!found.user) { console.error(`No account named "${username}".`); process.exit(1); }
+  return { id: found.user.id, username: `${found.user.username}#${found.user.tag}` };
 }
 
 function log(action, target) {
@@ -63,7 +68,7 @@ function log(action, target) {
     log('console.make_admin', u.id);
     console.log(`${u.username} is now a Hearth admin. They may need to refresh the page.`);
   } else if (command === 'list-admins') {
-    for (const a of all('SELECT username FROM users WHERE is_admin = 1 ORDER BY created_at')) console.log(a.username);
+    for (const a of all('SELECT username, tag FROM users WHERE is_admin = 1 ORDER BY created_at')) console.log(`${a.username}#${a.tag}`);
   } else if (command === 'unsuspend') {
     const u = findUser();
     run('UPDATE users SET suspended_at = NULL, suspended_reason = NULL WHERE id = ?', u.id);

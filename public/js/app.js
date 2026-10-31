@@ -95,6 +95,9 @@ function permsIn(srv) {
 }
 const can = (flag, srv = server()) => (permsIn(srv) & flag) === flag;
 
+// Full username with its number: josh#4821.
+const handleOf = (u) => (u ? `${u.username}#${u.tag || '0000'}` : 'deleted');
+
 function displayName(user, srv = server()) {
   const m = memberOf(srv, user.id);
   return (m && m.nickname) || user.displayName || user.username;
@@ -502,7 +505,8 @@ voice.addEventListener('speaking', (e) => {
 function notifyMessage(m) {
   const c = findChannel(m.channelId);
   if (!c) return;
-  const mentioned = new RegExp(`(^|\\W)@${S.me.username.replace(/\./g, '\\.')}(\\W|$)`, 'i').test(m.content);
+  // @josh pings every josh in the conversation; @josh#4821 pings just one.
+  const mentioned = new RegExp(`(^|\\W)@${S.me.username.replace(/\./g, '\\.')}(#${S.me.tag}\\b|(?![#\\w]))`, 'i').test(m.content);
   if (c.type !== 'dm' && !mentioned) return;
   if (!document.hidden && m.channelId === S.channelId) return;
   if (window.hearthDesktop) window.hearthDesktop.flash();
@@ -590,7 +594,7 @@ async function loadMessages(channelId, older = false) {
 // ---------------------------------------------------------------- rendering
 function renderMe() {
   $('me-name').textContent = S.me.displayName;
-  $('me-username').textContent = '@' + S.me.username;
+  $('me-username').textContent = '@' + handleOf(S.me);
   $('me-avatar').replaceWith(Object.assign(avatar(S.me), { id: 'me-avatar' }));
 }
 
@@ -1194,7 +1198,7 @@ async function acceptInvite(code) {
 }
 
 function newDmModal() {
-  const [lbl, name] = field('Their username');
+  const [lbl, name] = field('Their username (like josh#4821)');
   const err = el('p', { class: 'error' });
   const go = async () => {
     try { const dm = await api('POST', '/dms', { username: name.value.trim() }); S.dms.set(dm.id, dm); dlg.close(); selectServer(null); selectChannel(dm.id); }
@@ -1278,11 +1282,11 @@ function memberModal(s, m) {
   const self = m.user.id === S.me.id;
   const dlg = modal([
     el('div', { style: { display: 'flex', gap: '14px', alignItems: 'center' } }, avatar(m.user, { size: 64 }),
-      el('div', {}, el('h2', {}, m.nickname || m.user.displayName), el('div', { class: 'muted' }, '@' + m.user.username))),
+      el('div', {}, el('h2', {}, m.nickname || m.user.displayName), el('div', { class: 'muted' }, '@' + handleOf(m.user)))),
     memberRow(s, m, () => dlg.close()),
     el('div', { class: 'row' },
       self ? null : el('button', { class: 'btn primary', onclick: async () => {
-        try { const dm = await api('POST', '/dms', { username: m.user.username }); S.dms.set(dm.id, dm); dlg.close(); selectServer(null); selectChannel(dm.id); }
+        try { const dm = await api('POST', '/dms', { username: handleOf(m.user) }); S.dms.set(dm.id, dm); dlg.close(); selectServer(null); selectChannel(dm.id); }
         catch (e) { toast(e.message); }
       } }, 'Message'),
       self ? null : el('button', { class: 'btn', onclick: () => { dlg.close(); toggleBlock(m.user); } }, S.blocked.has(m.user.id) ? 'Unblock' : 'Block'),
@@ -1298,7 +1302,8 @@ function profileModal() {
   const dlg = modal([
     el('h2', {}, 'Your profile'),
     el('div', { style: { display: 'flex', gap: '14px', alignItems: 'center' } }, avatar(S.me, { size: 64 }),
-      el('div', {}, el('strong', {}, '@' + S.me.username),
+      el('div', {}, el('strong', {}, '@' + handleOf(S.me)),
+        el('div', { class: 'muted small' }, 'Share this so friends can find you.'),
         el('div', {}, el('button', { class: 'btn small', style: { marginTop: '4px' }, onclick: () => { dlg.close(); usernameModal(); } }, 'Change username')))),
     lbl,
     el('p', { class: 'muted small', style: { margin: '-8px 0 0' } }, 'Your display name is what people see in chat; change it any time. Your username is how people find and @mention you.'), el('label', {}, 'Avatar image', pic),
@@ -1456,7 +1461,7 @@ function deleteAccountModal() {
 
 function transferModal(s) {
   const select = el('select', {}, s.members.filter((m) => m.user.id !== S.me.id)
-    .map((m) => el('option', { value: m.user.id }, `${m.nickname || m.user.displayName} (@${m.user.username})`)));
+    .map((m) => el('option', { value: m.user.id }, `${m.nickname || m.user.displayName} (@${handleOf(m.user)})`)));
   const pw = el('input', { type: 'password', autocomplete: 'current-password' });
   const err = el('p', { class: 'error' });
   const dlg = modal([
@@ -1633,7 +1638,7 @@ async function accountSecurityModal() {
         if (!pw.value) { err.textContent = 'Enter your password above first.'; return; }
         try {
           const { codes } = await api('POST', '/users/@me/recovery-codes', { password: pw.value });
-          const text = `Hearth recovery codes for @${S.me.username}\nEach code works once.\n\n${codes.join('\n')}\n`;
+          const text = `Hearth recovery codes for @${handleOf(S.me)}\nEach code works once.\n\n${codes.join('\n')}\n`;
           body.replaceChildren(
             el('div', { class: 'danger-box' }, el('strong', {}, 'Save these now. They won’t be shown again.')),
             el('pre', { style: { fontSize: '16px', background: 'var(--bg-0)', padding: '12px', borderRadius: '6px', columns: '2' } }, codes.join('\n')),
@@ -1769,7 +1774,7 @@ function blockedModal() {
   const list = el('div');
   const dlg = modal([el('h2', {}, 'Blocked users'), list, el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => dlg.close() }, 'Close'))]);
   api('GET', '/users/@me/blocks').then((rows) => {
-    list.replaceChildren(...(rows.length ? rows.map((u) => el('div', { class: 'list-row' }, el('strong', {}, u.displayName), el('span', { class: 'muted small' }, '@' + u.username),
+    list.replaceChildren(...(rows.length ? rows.map((u) => el('div', { class: 'list-row' }, el('strong', {}, u.displayName), el('span', { class: 'muted small' }, '@' + handleOf(u)),
       el('span', { class: 'spacer' }), el('button', { class: 'btn', onclick: async () => { await toggleBlock({ id: u.id, displayName: u.displayName }); dlg.close(); } }, 'Unblock')))
       : [el('p', { class: 'muted' }, 'You haven’t blocked anyone.')]));
   });
@@ -1893,7 +1898,7 @@ function membersTab(s) {
   const draw = () => {
     const term = q.value.trim().toLowerCase();
     const cur = S.servers.get(s.id) || s;
-    list.replaceChildren(...cur.members.filter((m) => !term || (m.nickname || m.user.displayName).toLowerCase().includes(term) || m.user.username.includes(term))
+    list.replaceChildren(...cur.members.filter((m) => !term || (m.nickname || m.user.displayName).toLowerCase().includes(term) || handleOf(m.user).toLowerCase().includes(term))
       .slice(0, 200).map((m) => memberRow(cur, m, draw)));
   };
   q.oninput = draw;
@@ -1914,7 +1919,7 @@ function memberRow(s, m, refresh) {
   return el('div', { class: 'list-row', style: { flexWrap: 'wrap' } },
     avatar(m.user, { status: true }),
     el('div', {}, el('strong', {}, m.nickname || m.user.displayName, owner ? ' \u{1F451}' : '', timedOut ? ' ⏳' : ''),
-      el('div', { class: 'muted small' }, '@' + m.user.username, timedOut ? ` · timed out until ${new Date(m.timeoutUntil).toLocaleString()}` : '')),
+      el('div', { class: 'muted small' }, '@' + handleOf(m.user), timedOut ? ` · timed out until ${new Date(m.timeoutUntil).toLocaleString()}` : '')),
     el('span', { class: 'spacer' }),
     el('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap' } }, roles.map((r) => {
       const has = m.roles.includes(r.id);
@@ -1948,7 +1953,7 @@ async function bansTab(s) {
   const draw = async () => {
     const bans = await api('GET', `/servers/${s.id}/bans`);
     wrap.replaceChildren(...(bans.length ? bans.map((b) => el('div', { class: 'list-row' },
-      el('div', {}, el('strong', {}, b.displayName || 'Deleted user'), el('div', { class: 'muted small' }, (b.username ? '@' + b.username : '') + (b.reason ? ` · ${b.reason}` : ''))),
+      el('div', {}, el('strong', {}, b.displayName || 'Deleted user'), el('div', { class: 'muted small' }, (b.username ? '@' + handleOf(b) : '') + (b.reason ? ` · ${b.reason}` : ''))),
       el('span', { class: 'spacer' }),
       el('button', { class: 'btn', onclick: async () => { await api('DELETE', `/servers/${s.id}/bans/${b.userId}`).catch((e) => toast(e.message)); draw(); } }, 'Unban')))
       : [el('p', { class: 'muted' }, 'Nobody is banned.')]));
@@ -2178,7 +2183,7 @@ async function adminUsers() {
     const rows = await api('GET', `/admin/users?q=${encodeURIComponent(q.value.trim())}`);
     list.replaceChildren(...rows.map((u) => el('div', { class: 'list-row', style: { flexWrap: 'wrap' } },
       el('div', {}, el('strong', {}, u.displayName, u.isAdmin ? ' (admin)' : ''), el('div', { class: 'muted small' },
-        `@${u.username} · joined ${new Date(u.createdAt).toLocaleDateString()} · ${u.servers} servers · email ${u.hasEmail ? (u.emailVerified ? 'verified' : 'unverified') : 'none'}`,
+        `@${handleOf(u)} · joined ${new Date(u.createdAt).toLocaleDateString()} · ${u.servers} servers · email ${u.hasEmail ? (u.emailVerified ? 'verified' : 'unverified') : 'none'}`,
         u.suspendedAt ? ` · SUSPENDED: ${u.suspendedReason || ''}` : '')),
       el('span', { class: 'spacer' }),
       el('button', { class: 'btn', onclick: async () => {
@@ -2190,16 +2195,16 @@ async function adminUsers() {
         await api('POST', `/admin/users/${u.id}/birthdate-reset`, { reason: why }).catch((e) => toast(e.message)); toast('Birth date cleared; they can set it again.');
       } }, 'Reset DOB'),
       el('button', { class: 'btn', onclick: async () => {
-        const why = await askReason(`Rename @${u.username}`, 'Reason, e.g. offensive or impersonating username'); if (!why) return;
-        const n = await askReason('New username', 'Letters, numbers, dots or underscores'); if (!n) return;
-        try { await api('POST', `/admin/users/${u.id}/username`, { username: n, reason: why }); toast(`Renamed to @${n}.`); draw(); } catch (e) { toast(e.message); }
+        const why = await askReason(`Rename @${handleOf(u)}`, 'Reason, e.g. offensive or impersonating username'); if (!why) return;
+        const n = await askReason('New username', 'name, or name#1234 to choose the number'); if (!n) return;
+        try { const r = await api('POST', `/admin/users/${u.id}/username`, { username: n, reason: why }); toast(`Renamed to @${r.username}#${r.tag}.`); draw(); } catch (e) { toast(e.message); }
       } }, 'Rename'),
       u.id === S.me.id ? null : el('button', { class: 'btn', onclick: async () => {
         await api('POST', `/admin/users/${u.id}/admin`, { isAdmin: !u.isAdmin }).catch((e) => toast(e.message)); draw();
       } }, u.isAdmin ? 'Remove admin' : 'Make admin'),
       u.id === S.me.id ? null : el('button', { class: 'btn danger', onclick: async () => {
         if (u.suspendedAt) { await api('POST', `/admin/users/${u.id}/unsuspend`).catch((e) => toast(e.message)); return draw(); }
-        const why = await askReason(`Suspend @${u.username}`, 'Reason (shown to them when they try to log in)'); if (!why) return;
+        const why = await askReason(`Suspend @${handleOf(u)}`, 'Reason (shown to them when they try to log in)'); if (!why) return;
         await api('POST', `/admin/users/${u.id}/suspend`, { reason: why }).catch((e) => toast(e.message)); draw();
       } }, u.suspendedAt ? 'Unsuspend' : 'Suspend'))));
   };
@@ -2332,10 +2337,12 @@ function commandMenuKey(e) {
 function findMember(token) {
   const t = String(token || '').replace(/^@/, '').toLowerCase();
   if (!t) return null;
+  const tagged = /^(.+)#(\d{1,4})$/.exec(t);
   const srv = server();
   const pool = srv ? srv.members.map((m) => ({ user: m.user, nick: m.nickname }))
     : (findChannel(S.channelId)?.recipients || []).map((u) => ({ user: u }));
-  const hit = pool.find((p) => p.user.username.toLowerCase() === t)
+  const hit = (tagged && pool.find((p) => p.user.username.toLowerCase() === tagged[1] && p.user.tag === tagged[2].padStart(4, '0')))
+    || pool.find((p) => p.user.username.toLowerCase() === t)
     || pool.find((p) => (p.nick || '').toLowerCase() === t || p.user.displayName.toLowerCase() === t);
   return hit ? hit.user : null;
 }
@@ -2445,6 +2452,7 @@ function maybeWelcome() {
     const dlg = modal([
       el('div', { class: 'welcome-hero' }, el('img', { src: '/icon.svg', alt: '' }),
         el('h2', {}, `Welcome to Hearth, ${S.me.displayName}`)),
+      el('p', { class: 'welcome-handle' }, 'Your username is ', el('strong', {}, '@' + handleOf(S.me)), '. Share it so friends can find you; the number keeps it unique.'),
       el('p', {}, 'Hearth is where your groups hang out: text channels, voice and video calls, screen sharing for games, and direct messages. Private by design, with no ads or tracking.'),
       el('p', { class: 'muted' }, 'Want a quick tour? It takes about a minute and shows where everything is.'),
       el('div', { class: 'row' },
@@ -3069,13 +3077,16 @@ async function adminServers() {
 function usernameModal() {
   const next = S.me.nextUsernameChange || 0;
   const waiting = next > Date.now();
-  const [lblU, uname] = field('New username', { value: S.me.username, maxlength: 32, autocomplete: 'off', spellcheck: 'false', disabled: waiting });
+  const [lblU, uname] = field('New username', { value: handleOf(S.me), maxlength: 37, autocomplete: 'off', spellcheck: 'false', disabled: waiting });
   const [lblP, pw] = field('Your password', { type: 'password', autocomplete: 'current-password', disabled: waiting });
   const err = el('p', { class: 'error' });
   const hint = el('p', { class: 'muted small', style: { margin: 0 } });
   const check = () => {
     const v = uname.value.trim();
-    hint.textContent = !/^[a-zA-Z0-9_.]{2,32}$/.test(v) ? '2–32 letters, numbers, dots or underscores.' : v === S.me.username ? '' : `People will find and @mention you as @${v}.`;
+    const m = /^([a-zA-Z0-9_.]{2,32})(?:#(\d{1,4}))?$/.exec(v);
+    hint.textContent = !m ? '2–32 letters, numbers, dots or underscores, then optionally #1234 to choose your number.'
+      : v === handleOf(S.me) ? 'Change the name, the number, or both. Leave the number off and Hearth keeps yours if it’s free, or picks one.'
+        : m[2] ? `You’ll be @${m[1]}#${m[2].padStart(4, '0')} if that number is free.` : `You’ll be @${m[1]}#… (your current number if it’s free).`;
   };
   uname.addEventListener('input', check); check();
   const save = async () => {
@@ -3083,14 +3094,14 @@ function usernameModal() {
     try {
       const me = await api('POST', '/users/@me/username', { username: uname.value.trim(), password: pw.value });
       S.me = { ...S.me, ...me }; renderMe(); dlg.close();
-      toast(`You’re now @${me.username}.`);
+      toast(`You’re now @${handleOf(me)}.`);
     } catch (e) { err.textContent = e.message; if (e.data && e.data.field === 'password') pw.focus(); }
   };
   pw.addEventListener('keydown', (e) => e.key === 'Enter' && save());
   const dlg = modal([
     el('h2', {}, 'Change username'),
     waiting ? el('div', { class: 'wiz-box warn' }, `You changed your username recently. You can change it again on ${new Date(next).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}.`)
-      : el('p', { class: 'muted small', style: { margin: 0 } }, `You can change your username once every 30 days. Your old name (@${S.me.username}) is held for 30 days so nobody else can take it. Old messages update to your new name.`),
+      : el('p', { class: 'muted small', style: { margin: 0 } }, `You can change your username once every 30 days. Your old name (@${handleOf(S.me)}) is held for 30 days so nobody else can take it. Old messages update to your new name.`),
     lblU, hint, lblP, err,
     el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => dlg.close() }, waiting ? 'Close' : 'Cancel'),
       waiting ? null : el('button', { class: 'btn primary', onclick: save }, 'Change username')),

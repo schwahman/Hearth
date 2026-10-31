@@ -116,7 +116,7 @@ function userFromToken(token) {
   if (!token || typeof token !== 'string' || token.length > 100) return null;
   const h = hashToken(token);
   const row = one(
-    `SELECT s.created_at, s.last_seen, u.id, u.username, u.display_name, u.avatar
+    `SELECT s.created_at, s.last_seen, u.id, u.username, u.tag, u.display_name, u.avatar
      FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND u.suspended_at IS NULL`, h);
   if (!row) return null;
   const now = Date.now();
@@ -345,7 +345,7 @@ async function forgotPassword(identifier, meta) {
   if (id.includes('@')) {
     try { user = one('SELECT id FROM users WHERE email_hash = ?', emailHash(normalizeEmail(id))); } catch { /* invalid email */ }
   } else {
-    user = one('SELECT id FROM users WHERE username = ?', id.slice(0, 64));
+    user = findByHandle(id.slice(0, 64), 'AND is_system = 0').user || null; // name#tag, or a name only one account uses
   }
   if (!user) return;
   try { hit(`forgot-user:${user.id}`, 3, 3600 * 1000); } catch { return; }
@@ -361,7 +361,7 @@ async function resetPassword({ identifier, code, recoveryCode, newPassword }, me
   if (id.includes('@')) {
     try { user = one('SELECT id, username FROM users WHERE email_hash = ?', emailHash(normalizeEmail(id))); } catch { /* invalid */ }
   } else {
-    user = one('SELECT id, username FROM users WHERE username = ?', id.slice(0, 64));
+    user = findByHandle(id.slice(0, 64), 'AND is_system = 0').user || null;
   }
   const bad = new HttpError(400, 'That code is wrong or has expired.');
   if (!user) throw bad;
@@ -449,8 +449,9 @@ async function register(username, password, displayName, meta, acceptedTerms, em
   if (made && Date.now() < made.reset && made.n >= 5 * SCALE) {
     throw new HttpError(429, 'Too many new accounts from this network. Try again later.');
   }
-  checkUsername(username);
-  checkPasswordRules(password, username);
+  const wanted = parseHandle(username);
+  checkUsername(wanted.name);
+  checkPasswordRules(password, wanted.name);
   if (acceptedTerms !== true) {
     throw new HttpError(400, 'Please confirm you are at least 13 and agree to the Terms and Privacy Policy.');
   }
@@ -459,16 +460,16 @@ async function register(username, password, displayName, meta, acceptedTerms, em
   if (one('SELECT 1 FROM users WHERE email_hash = ?', emailHash(normEmail))) {
     throw new HttpError(409, 'That email address is already used by another account.');
   }
-  usernameFree(username, null);
+  const { name: uname, tag } = claimHandle(username, null, null);
   const hash = await hashPassword(password);
   const id = newId();
   hit(`regok:${meta.ip}`, 5, 3600 * 1000);
   const now = Date.now();
   // The very first account on a new Hearth becomes its platform admin.
   const first = !one('SELECT 1 FROM users LIMIT 1');
-  run(`INSERT INTO users (id, username, display_name, password_hash, created_at, terms_accepted_at, email_enc, email_hash, is_admin)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    id, username, String(displayName || username).trim().slice(0, 32) || username, hash, now, now,
+  run(`INSERT INTO users (id, username, tag, display_name, password_hash, created_at, terms_accepted_at, email_enc, email_hash, is_admin)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    id, uname, tag, String(displayName || uname).trim().slice(0, 32) || uname, hash, now, now,
     secrets.encryptText('email', normEmail), emailHash(normEmail), first ? 1 : 0);
   run('UPDATE users SET birthdate_enc = ? WHERE id = ?', secrets.encryptText('birthdate', dob), id);
   sendCode(id, 'verify', normEmail).catch((e) => console.warn('[mail] verification email failed:', e.message));
@@ -476,22 +477,74 @@ async function register(username, password, displayName, meta, acceptedTerms, em
 }
 
 // ---------- usernames ----------
+// A username is a name plus a 4-digit tag: josh#4821. Many people can pick
+// the same name; the tag keeps every account unique. Names are compared
+// without regard to capitals.
 const USERNAME_DAYS = 30;
 // Names that could be used to pretend to be Hearth staff.
 const RESERVED = new Set(['admin', 'administrator', 'hearth', 'hearthadmin', 'support', 'moderator', 'mod', 'mods', 'system',
   'staff', 'official', 'help', 'security', 'root', 'owner', 'everyone', 'here', 'safety', 'trustandsafety']);
-function checkUsername(username) {
-  if (!/^[a-zA-Z0-9_.]{2,32}$/.test(username || '')) {
+
+// "josh#4821" -> { name: 'josh', tag: '4821' }; "josh" -> { name: 'josh', tag: null }
+function parseHandle(input) {
+  const m = /^@?([^#\s]*)(?:#(\d{1,4}))?$/.exec(String(input || '').trim());
+  if (!m) return { name: String(input || '').trim(), tag: null, bad: true };
+  return { name: m[1], tag: m[2] ? m[2].padStart(4, '0') : null };
+}
+const handleOf = (u) => (u ? `${u.username}#${u.tag || '0000'}` : 'deleted user');
+
+function checkUsername(name) {
+  if (!/^[a-zA-Z0-9_.]{2,32}$/.test(name || '')) {
     throw new HttpError(400, 'Username must be 2-32 letters, numbers, dots or underscores.');
   }
-  if (RESERVED.has(username.toLowerCase().replace(/[._]/g, ''))) throw new HttpError(400, 'That username is reserved. Please choose another.');
+  if (RESERVED.has(name.toLowerCase().replace(/[._]/g, ''))) throw new HttpError(400, 'That username is reserved. Please choose another.');
 }
-function usernameFree(username, userId) {
-  const taken = one('SELECT id FROM users WHERE username = ?', username);
-  if (taken && taken.id !== userId) throw new HttpError(409, 'That username is taken.');
-  const held = one('SELECT user_id FROM username_holds WHERE username = ? AND until > ?', username, Date.now());
-  if (held && held.user_id !== userId) throw new HttpError(409, 'That username is taken.');
+function checkTag(tag) {
+  if (!/^\d{4}$/.test(tag) || tag === '0000') throw new HttpError(400, 'The tag must be a number from 0001 to 9999.');
 }
+// Is name#tag free (for userId, who may already hold it)?
+function handleFree(name, tag, userId) {
+  const taken = one('SELECT id FROM users WHERE username = ? AND tag = ?', name, tag);
+  if (taken && taken.id !== userId) return false;
+  const held = one('SELECT user_id FROM username_holds WHERE username = ? AND tag = ? AND until > ?', name, tag, Date.now());
+  return !(held && held.user_id !== userId);
+}
+function randomFreeTag(name, userId) {
+  const used = new Set(all('SELECT tag FROM users WHERE username = ? UNION SELECT tag FROM username_holds WHERE username = ? AND until > ?', name, name, Date.now()).map((r) => r.tag));
+  if (used.size >= 9000) throw new HttpError(409, 'Too many people already use that name. Please choose another.');
+  for (;;) {
+    const tag = String(1 + crypto.randomInt(9999)).padStart(4, '0');
+    if (!used.has(tag) && handleFree(name, tag, userId)) return tag;
+  }
+}
+// Picks the name#tag for a new or renamed account. keepTag: try this tag
+// first when none was asked for (so a rename keeps your number if it can).
+function claimHandle(input, userId, keepTag) {
+  const { name, tag, bad } = parseHandle(input);
+  if (bad) throw new HttpError(400, 'Username must be 2-32 letters, numbers, dots or underscores, optionally followed by #1234.');
+  checkUsername(name);
+  if (tag) {
+    checkTag(tag);
+    if (!handleFree(name, tag, userId)) throw new HttpError(409, `${name}#${tag} is taken. Try another number, or leave the number off and Hearth will pick one.`);
+    return { name, tag };
+  }
+  if (keepTag && handleFree(name, keepTag, userId)) return { name, tag: keepTag };
+  return { name, tag: randomFreeTag(name, userId) };
+}
+// Finds an account from "name#tag", or from a bare name if only one
+// account uses it. Returns { user } or { ambiguous: true } or {}.
+function findByHandle(input, extraWhere = '') {
+  const { name, tag } = parseHandle(input);
+  if (!name) return {};
+  if (tag) {
+    const u = one(`SELECT * FROM users WHERE username = ? AND tag = ? ${extraWhere}`, name, tag);
+    return u ? { user: u } : {};
+  }
+  const rows = all(`SELECT * FROM users WHERE username = ? ${extraWhere} LIMIT 2`, name);
+  if (rows.length === 1) return { user: rows[0] };
+  return rows.length ? { ambiguous: true } : {};
+}
+
 // When this person may change their username next (0 = now).
 function nextUsernameChange(userId) {
   const r = one('SELECT username_changed_at FROM users WHERE id = ?', userId);
@@ -500,9 +553,8 @@ function nextUsernameChange(userId) {
 
 // byAdmin: a Hearth admin renaming someone (e.g. an offensive name) skips
 // the password and the 30-day limit, and doesn't use up the person's change.
-async function changeUsername(userId, newName, password, { byAdmin = false } = {}) {
-  newName = String(newName || '').trim();
-  const u = one('SELECT username, password_hash FROM users WHERE id = ?', userId);
+async function changeUsername(userId, input, password, { byAdmin = false } = {}) {
+  const u = one('SELECT username, tag, password_hash FROM users WHERE id = ?', userId);
   if (!u) throw new HttpError(404, 'User not found.');
   if (!byAdmin) {
     hit(`rename:${userId}`, 10, 3600 * 1000);
@@ -513,19 +565,20 @@ async function changeUsername(userId, newName, password, { byAdmin = false } = {
       throw new HttpError(429, `You can change your username again on ${new Date(next).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}.`);
     }
   }
-  if (newName === u.username) throw new HttpError(400, 'That\u2019s already your username.');
-  checkUsername(newName);
-  usernameFree(newName, userId);
+  const { name, tag } = claimHandle(input, userId, u.tag);
+  if (name === u.username && tag === u.tag) throw new HttpError(400, 'That’s already your username.');
   const now = Date.now();
   tx(() => {
-    run('DELETE FROM username_holds WHERE until <= ? OR username = ?', now, newName);
-    // Hold the old name; only a case-only change (josh -> Josh) keeps nothing to hold.
-    if (u.username.toLowerCase() !== newName.toLowerCase()) {
-      run('INSERT OR REPLACE INTO username_holds (username, user_id, until) VALUES (?, ?, ?)', u.username, userId, now + USERNAME_DAYS * 86400000);
+    run('DELETE FROM username_holds WHERE until <= ? OR (username = ? AND tag = ?)', now, name, tag);
+    // Hold the old name#tag so nobody else can take it right away
+    // (not needed when only capitals changed).
+    if (!(u.username.toLowerCase() === name.toLowerCase() && u.tag === tag)) {
+      run('INSERT OR REPLACE INTO username_holds (username, tag, user_id, until) VALUES (?, ?, ?, ?)', u.username, u.tag, userId, now + USERNAME_DAYS * 86400000);
     }
-    run(`UPDATE users SET username = ?${byAdmin ? '' : ', username_changed_at = ?'} WHERE id = ?`, ...(byAdmin ? [newName, userId] : [newName, now, userId]));
+    if (byAdmin) run('UPDATE users SET username = ?, tag = ? WHERE id = ?', name, tag, userId);
+    else run('UPDATE users SET username = ?, tag = ?, username_changed_at = ? WHERE id = ?', name, tag, now, userId);
   });
-  return { oldName: u.username, username: newName, nextChange: byAdmin ? nextUsernameChange(userId) : now + USERNAME_DAYS * 86400000 };
+  return { oldName: handleOf(u), username: name, tag, handle: `${name}#${tag}`, nextChange: byAdmin ? nextUsernameChange(userId) : now + USERNAME_DAYS * 86400000 };
 }
 
 async function login(username, password, meta) {
@@ -533,7 +586,13 @@ async function login(username, password, meta) {
   username = String(username || '').slice(0, 64);
   password = typeof password === 'string' ? password.slice(0, PASSWORD_MAX + 1) : '';
   checkLock(username);
-  const user = one('SELECT id, password_hash FROM users WHERE username = ?', username);
+  const found = findByHandle(username, 'AND is_system = 0');
+  if (found.ambiguous) {
+    // Several accounts use this name: say so (without checking the
+    // password), so people know to add their #number.
+    throw new HttpError(400, 'More than one account uses that name. Add your number, like name#1234 (it’s shown in your profile).');
+  }
+  const user = found.user;
   const { ok, needsUpgrade } = await verifyPassword(password, user ? user.password_hash : await getDummyHash());
   if (!user || !ok) {
     recordFailure(username);
@@ -565,5 +624,5 @@ module.exports = {
   register, login, changePassword, resendVerification, verifyEmail, requestEmailChange, confirmEmailChange,
   forgotPassword, resetPassword, generateRecoveryCodes, accountSecurity, userEmail, hit, setBirthdate, createSession, userFromToken, revokeSession, revokeAllSessions,
   listSessions, revokeSessionById, hashPassword, verifyPassword, hashToken, HttpError, PASSWORD_MIN,
-  changeUsername, nextUsernameChange, USERNAME_DAYS,
+  changeUsername, nextUsernameChange, USERNAME_DAYS, parseHandle, handleOf, findByHandle,
 };

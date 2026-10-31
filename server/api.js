@@ -194,7 +194,7 @@ route('POST', '/api/auth/register', async ({ req, res, body }) => {
     throw new HttpError(403, 'Registration is closed on this server.');
   }
   const { id, token } = await auth.register(body.username, body.password, body.displayName, meta(req), body.acceptTerms, body.email, body.birthdate);
-  activity.record('user.register', { userId: id, detail: { username: one('SELECT username FROM users WHERE id = ?', id).username } });
+  activity.record('user.register', { userId: id, detail: { username: userName(id) } });
   return loginResponse(req, res, body, id, token);
 }, { public: true });
 
@@ -239,10 +239,10 @@ route('DELETE', '/api/users/@me', async ({ req, res, user, body }) => {
     const u = one('SELECT * FROM users WHERE id = ?', user.id);
     const msgs = all('SELECT * FROM messages WHERE author_id = ?', user.id);
     vault.store({
-      kind: 'account', userId: user.id, label: `Account @${u.username}`,
+      kind: 'account', userId: user.id, label: `Account @${tagged(u)}`,
       data: {
         account: {
-          id: u.id, username: u.username, displayName: u.display_name, createdAt: u.created_at,
+          id: u.id, username: tagged(u), displayName: u.display_name, createdAt: u.created_at,
           email: u.email_enc ? secrets.decryptText('email', u.email_enc) : null, emailVerified: !!u.email_verified_at,
         },
         deletedAt: Date.now(),
@@ -281,13 +281,13 @@ route('DELETE', '/api/users/@me', async ({ req, res, user, body }) => {
 
 // Everything Hearth stores about you, as one JSON file.
 route('GET', '/api/users/@me/export', ({ res, user, token }) => {
-  const u = one('SELECT id, username, display_name, avatar, created_at, terms_accepted_at FROM users WHERE id = ?', user.id);
+  const u = one('SELECT id, username, tag, display_name, avatar, created_at, terms_accepted_at FROM users WHERE id = ?', user.id);
   const where = (channelId) => {
     const c = one('SELECT * FROM channels WHERE id = ?', channelId);
     if (!c) return 'deleted channel';
     if (c.type === 'dm') {
-      const others = all('SELECT u.username FROM dm_recipients d JOIN users u ON u.id = d.user_id WHERE d.channel_id = ? AND d.user_id != ?', c.id, user.id);
-      return `Direct message with ${others.map((o) => o.username).join(', ') || 'a deleted user'}`;
+      const others = all('SELECT u.username, u.tag FROM dm_recipients d JOIN users u ON u.id = d.user_id WHERE d.channel_id = ? AND d.user_id != ?', c.id, user.id);
+      return `Direct message with ${others.map(tagged).join(', ') || 'a deleted user'}`;
     }
     const srv = one('SELECT name FROM servers WHERE id = ?', c.server_id);
     return `${srv ? srv.name : 'server'} / #${c.name}`;
@@ -295,7 +295,7 @@ route('GET', '/api/users/@me/export', ({ res, user, token }) => {
   const data = {
     exportedAt: new Date().toISOString(),
     account: {
-      id: u.id, username: u.username, displayName: u.display_name, avatar: u.avatar,
+      id: u.id, username: tagged(u), displayName: u.display_name, avatar: u.avatar,
       createdAt: new Date(u.created_at).toISOString(),
       termsAcceptedAt: u.terms_accepted_at ? new Date(u.terms_accepted_at).toISOString() : null,
       note: 'Your password is not included because Hearth never stores it, only a one-way hash.',
@@ -363,7 +363,7 @@ route('POST', '/api/users/@me/recovery-codes', async ({ user, body }) => ({ code
 // Change your username (once every 30 days; your password is required).
 route('POST', '/api/users/@me/username', async ({ user, body }) => {
   const r = await auth.changeUsername(user.id, body.username, body.password);
-  activity.record('user.rename', { userId: user.id, detail: { from: r.oldName, username: r.username } });
+  activity.record('user.rename', { userId: user.id, detail: { from: r.oldName, username: r.handle } });
   publishUser(user.id);
   return { ...ser.me(user.id), nextUsernameChange: r.nextChange };
 });
@@ -411,7 +411,7 @@ route('POST', '/api/servers', ({ user, body }) => {
     run(`INSERT INTO channels (id, server_id, name, type, position, created_at) VALUES (?, ?, 'General', 'voice', 1, ?)`,
       newId(), serverId, now);
   });
-  activity.record('server.create', { userId: user.id, serverId, detail: { name, owner: user.username } });
+  activity.record('server.create', { userId: user.id, serverId, detail: { name, owner: tagged(user) } });
   const payload = ser.server(serverId, user.id);
   bus.publish(`user:${user.id}`, { t: 'SERVER_CREATE', d: payload });
   return payload;
@@ -479,7 +479,7 @@ function vaultServer(serverId, deletedBy) {
       deletedBy, deletedAt: Date.now(),
       channels: channels.map((c) => ({ id: c.id, name: c.name, type: c.type })),
       roles: all('SELECT id, name, permissions FROM roles WHERE server_id = ?', serverId),
-      members: all('SELECT m.user_id, u.username FROM members m LEFT JOIN users u ON u.id = m.user_id WHERE m.server_id = ?', serverId),
+      members: all('SELECT m.user_id, u.username, u.tag FROM members m LEFT JOIN users u ON u.id = m.user_id WHERE m.server_id = ?', serverId),
       messages: messageSnapshot(msgs),
     },
     files: vault.attachmentsOf(msgs),
@@ -523,7 +523,7 @@ route('DELETE', '/api/servers/:id/members/@me', ({ user, params }) => {
     throw new HttpError(400, 'The owner cannot leave. Delete the server instead.');
   }
   removeMember(params.id, user.id);
-  audit(params.id, user.id, 'member.leave', { type: 'user', id: user.id, name: user.username });
+  audit(params.id, user.id, 'member.leave', { type: 'user', id: user.id, name: tagged(user) });
 });
 
 function guardTarget(serverId, actorId, targetId) {
@@ -542,7 +542,9 @@ function audit(serverId, actorId, action, target = {}, reason = '') {
     target.type || null, target.id || null, target.name ? String(target.name).slice(0, 100) : null,
     reason ? String(reason).slice(0, 500) : null, Date.now());
 }
-const userName = (id) => (one('SELECT username FROM users WHERE id = ?', id) || {}).username || 'deleted user';
+// Full name#tag, used in logs and records.
+const userName = (id) => auth.handleOf(one('SELECT username, tag FROM users WHERE id = ?', id));
+const tagged = (u) => auth.handleOf(u);
 // Audit entries are kept 90 days.
 setInterval(() => run('DELETE FROM audit_log WHERE created_at < ?', Date.now() - 90 * 86400000), 3600 * 1000).unref();
 
@@ -566,9 +568,9 @@ route('DELETE', '/api/servers/:id/members/:userId', ({ user, params, body }) => 
 
 route('GET', '/api/servers/:id/bans', ({ user, params }) => {
   requireServerPerm(params.id, user.id, P.BAN_MEMBERS);
-  return all(`SELECT b.user_id, b.reason, u.username, u.display_name FROM bans b LEFT JOIN users u ON u.id = b.user_id
+  return all(`SELECT b.user_id, b.reason, u.username, u.tag, u.display_name FROM bans b LEFT JOIN users u ON u.id = b.user_id
               WHERE b.server_id = ?`, params.id)
-    .map((b) => ({ userId: b.user_id, username: b.username, displayName: b.display_name, reason: b.reason }));
+    .map((b) => ({ userId: b.user_id, username: b.username, tag: b.tag, displayName: b.display_name, reason: b.reason }));
 });
 
 route('PUT', '/api/servers/:id/bans/:userId', ({ user, params, body }) => {
@@ -664,8 +666,8 @@ route('POST', '/api/invites/:code', ({ user, params }) => {
     });
     bus.publish(`server:${serverId}`, { t: 'MEMBER_ADD', d: { serverId, member: ser.member(serverId, user.id) } });
     const srv = one('SELECT name, system_channel_id FROM servers WHERE id = ?', serverId);
-    audit(serverId, user.id, 'member.join', { type: 'user', id: user.id, name: user.username }, `Invite ${inv.code} from ${userName(inv.creator_id)}`);
-    activity.record('member.join', { userId: user.id, serverId, detail: { username: user.username, server: srv.name } });
+    audit(serverId, user.id, 'member.join', { type: 'user', id: user.id, name: tagged(user) }, `Invite ${inv.code} from ${userName(inv.creator_id)}`);
+    activity.record('member.join', { userId: user.id, serverId, detail: { username: tagged(user), server: srv.name } });
     // "Kyle joined the server." in the server's chosen channel.
     const sys = srv.system_channel_id && one(`SELECT * FROM channels WHERE id = ? AND server_id = ? AND type = 'text'`, srv.system_channel_id, serverId);
     if (sys) postSystemMessage(sys, user.id, 'join', 'joined the server.');
@@ -771,7 +773,9 @@ function checkParent(serverId, parentId) {
 
 // ---------- direct messages ----------
 route('POST', '/api/dms', ({ user, body }) => {
-  const other = one('SELECT * FROM users WHERE username = ? AND is_system = 0', String(body.username || ''));
+  const found = auth.findByHandle(String(body.username || ''), 'AND is_system = 0');
+  if (found.ambiguous) throw new HttpError(400, 'More than one person uses that name. Add their number, like name#1234.');
+  const other = found.user;
   if (!other) throw new HttpError(404, 'No user with that username.');
   if (other.id === user.id) throw new HttpError(400, 'You cannot DM yourself.');
   const existing = one(
@@ -1218,8 +1222,8 @@ route('POST', '/api/admin/users/:id/birthdate-reset', ({ user, params, body }) =
 
 // ---------- blocking ----------
 route('GET', '/api/users/@me/blocks', ({ user }) =>
-  all('SELECT b.blocked_id, u.username, u.display_name FROM blocks b JOIN users u ON u.id = b.blocked_id WHERE b.user_id = ?', user.id)
-    .map((b) => ({ id: b.blocked_id, username: b.username, displayName: b.display_name })));
+  all('SELECT b.blocked_id, u.username, u.tag, u.display_name FROM blocks b JOIN users u ON u.id = b.blocked_id WHERE b.user_id = ?', user.id)
+    .map((b) => ({ id: b.blocked_id, username: b.username, tag: b.tag, displayName: b.display_name })));
 
 route('PUT', '/api/users/@me/blocks/:userId', ({ user, params }) => {
   if (params.userId === user.id) throw new HttpError(400, 'You cannot block yourself.');
@@ -1274,11 +1278,11 @@ route('POST', '/api/reports', ({ user, body }) => {
     evidence = { message: messageSnapshot([m])[0], channel: channel.type === 'dm' ? 'direct message' : `#${channel.name}` };
     files = vault.attachmentsOf([m]);
   } else if (targetType === 'user') {
-    const u = one('SELECT id, username, display_name, avatar, created_at FROM users WHERE id = ?', String(body.targetId));
+    const u = one('SELECT id, username, tag, display_name, avatar, created_at FROM users WHERE id = ?', String(body.targetId));
     if (!u) throw new HttpError(404, 'User not found.');
     targetUserId = u.id;
     if (body.serverId && one('SELECT 1 FROM members WHERE server_id = ? AND user_id = ?', String(body.serverId), user.id)) serverId = String(body.serverId);
-    evidence = { user: { id: u.id, username: u.username, displayName: u.display_name, avatar: u.avatar, createdAt: u.created_at } };
+    evidence = { user: { id: u.id, username: tagged(u), displayName: u.display_name, avatar: u.avatar, createdAt: u.created_at } };
   } else if (targetType === 'server') {
     const srv = one('SELECT id, name, owner_id FROM servers WHERE id = ?', String(body.targetId));
     if (!srv || !one('SELECT 1 FROM members WHERE server_id = ? AND user_id = ?', srv.id, user.id)) throw new HttpError(404, 'Server not found.');
@@ -1291,7 +1295,7 @@ route('POST', '/api/reports', ({ user, body }) => {
 
   const evidenceId = vault.store({
     kind: 'report', userId: targetUserId, serverId, label: `Report evidence: ${REPORT_CATEGORIES[category]}`,
-    data: { ...evidence, reportedBy: user.id, reporter: user.username, category, details, reportedAt: Date.now() },
+    data: { ...evidence, reportedBy: user.id, reporter: tagged(user), category, details, reportedAt: Date.now() },
     files, days: vault.REPORT_DAYS,
   });
 
@@ -1436,11 +1440,14 @@ route('GET', '/api/admin/users', ({ user, query }) => {
   requireAdmin(user);
   const q = String(query.get('q') || '').trim().slice(0, 64);
   vault.logAccess(user.id, 'users.search', null, q);
-  const rows = q
+  const ph = auth.parseHandle(q);
+  const rows = q && ph.tag
+    ? all('SELECT * FROM users WHERE is_system = 0 AND username = ? AND tag = ?', ph.name, ph.tag)
+    : q
     ? all(`SELECT * FROM users WHERE is_system = 0 AND (username LIKE ? ESCAPE '\\' OR id = ?) ORDER BY username LIMIT 50`, `%${q.replace(/[%_\\]/g, (c) => '\\' + c)}%`, q)
     : all('SELECT * FROM users WHERE is_system = 0 ORDER BY created_at DESC LIMIT 50');
   return rows.map((u) => ({
-    id: u.id, username: u.username, displayName: u.display_name, createdAt: u.created_at, isAdmin: !!u.is_admin,
+    id: u.id, username: u.username, tag: u.tag, displayName: u.display_name, createdAt: u.created_at, isAdmin: !!u.is_admin,
     suspendedAt: u.suspended_at, suspendedReason: u.suspended_reason, hasEmail: !!u.email_enc, emailVerified: !!u.email_verified_at,
     servers: one('SELECT COUNT(*) AS n FROM members WHERE user_id = ?', u.id).n,
   }));
@@ -1463,9 +1470,9 @@ route('POST', '/api/admin/users/:id/username', async ({ user, params, body }) =>
   if (!reason) throw new HttpError(400, 'Give a reason (it\u2019s recorded in the admin log).');
   if (one('SELECT 1 FROM users WHERE id = ? AND is_system = 1', params.id)) throw new HttpError(400, 'That\u2019s a system account.');
   const r = await auth.changeUsername(params.id, body.username, null, { byAdmin: true });
-  vault.logAccess(user.id, 'user.rename', params.id, `${r.oldName} -> ${r.username}: ${reason.slice(0, 300)}`);
+  vault.logAccess(user.id, 'user.rename', params.id, `${r.oldName} -> ${r.handle}: ${reason.slice(0, 300)}`);
   publishUser(params.id);
-  return { username: r.username };
+  return { username: r.username, tag: r.tag };
 });
 
 route('POST', '/api/admin/users/:id/suspend', ({ user, params, body }) => {
@@ -1492,8 +1499,8 @@ route('POST', '/api/admin/holds', ({ user, body }) => {
   let targetId = String(body.targetId || '').trim();
   let label = targetId;
   if (type === 'user') {
-    const u = one('SELECT id, username FROM users WHERE id = ? OR username = ?', targetId, targetId);
-    if (u) { targetId = u.id; label = '@' + u.username; } else if (!one('SELECT 1 FROM vault WHERE user_id = ?', targetId)) throw new HttpError(404, 'No user or stored data with that ID or username.');
+    const u = one('SELECT id, username, tag FROM users WHERE id = ?', targetId) || auth.findByHandle(targetId).user;
+    if (u) { targetId = u.id; label = '@' + tagged(u); } else if (!one('SELECT 1 FROM vault WHERE user_id = ?', targetId)) throw new HttpError(404, 'No user or stored data with that ID or username.');
   } else {
     const srv = one('SELECT id, name FROM servers WHERE id = ?', targetId);
     if (srv) label = srv.name; else if (!one('SELECT 1 FROM vault WHERE server_id = ?', targetId)) throw new HttpError(404, 'No server or stored data with that ID.');
@@ -1506,7 +1513,7 @@ route('DELETE', '/api/admin/holds/:id', ({ user, params }) => { requireAdmin(use
 route('GET', '/api/admin/vault', ({ user, query }) => {
   requireAdmin(user);
   let userId = query.get('user') || null;
-  if (userId) { const u = one('SELECT id FROM users WHERE username = ?', userId); if (u) userId = u.id; }
+  if (userId) { const u = auth.findByHandle(userId).user; if (u) userId = u.id; }
   vault.logAccess(user.id, 'vault.list', userId || query.get('server') || 'all');
   return vault.list({ userId, serverId: query.get('server') || null, kind: query.get('kind') || null });
 });
@@ -1551,7 +1558,7 @@ route('PUT', '/api/admin/alerts', ({ user, body }) => {
 route('GET', '/api/admin/servers', ({ user, query }) => {
   requireAdmin(user);
   const q = String(query.get('q') || '').trim().slice(0, 64);
-  const rows = all(`SELECT s.id, s.name, s.created_at, s.age_rating, u.username AS owner,
+  const rows = all(`SELECT s.id, s.name, s.created_at, s.age_rating, u.username || '#' || u.tag AS owner,
       (SELECT COUNT(*) FROM members m WHERE m.server_id = s.id) AS members,
       (SELECT COUNT(*) FROM channels c WHERE c.server_id = s.id AND c.type != 'category') AS channels,
       (SELECT MAX(m.created_at) FROM messages m JOIN channels c ON c.id = m.channel_id WHERE c.server_id = s.id AND m.import_source IS NULL AND (m.kind IS NULL OR m.kind != 'join')) AS last_message,

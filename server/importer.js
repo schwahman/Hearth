@@ -221,7 +221,7 @@ function archiveUserId() {
   const id = newId();
   // A locked system account: '!' is not a valid password hash, so no one can
   // ever sign in as it, and the name can't be registered by a person.
-  run(`INSERT INTO users (id, username, display_name, password_hash, created_at, is_system) VALUES (?, 'discord-archive', 'Discord archive', '!', ?, 1)`, id, Date.now());
+  run(`INSERT INTO users (id, username, tag, display_name, password_hash, created_at, is_system) VALUES (?, 'discord-archive', '0000', 'Discord archive', '!', ?, 1)`, id, Date.now());
   return id;
 }
 

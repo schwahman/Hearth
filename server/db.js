@@ -5,6 +5,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const config = require('./config');
@@ -358,11 +359,54 @@ CREATE TABLE IF NOT EXISTS admin_log (
 // Username changes: once every 30 days, and an old name is held for 30
 // days so nobody else can grab it to impersonate the person who left it.
 addColumn('users', 'username_changed_at', 'INTEGER');
+
+// Name tags: a username is a name plus a 4-digit tag (josh#4821), so many
+// people can use the same name and every account is still unique. Older
+// databases had one-of-a-kind names; rebuild the users table without that
+// rule and give everyone a random tag. (SQLite can't drop a UNIQUE rule in
+// place, so this follows SQLite's documented table-rebuild steps.)
+if (!db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'tag')) {
+  const oldSql = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'`).get().sql;
+  const newSql = oldSql.replace(/CREATE TABLE\s+"?users"?/, 'CREATE TABLE users_v2')
+    .replace(/username(\s+)TEXT NOT NULL UNIQUE COLLATE NOCASE/, 'username$1TEXT NOT NULL COLLATE NOCASE');
+  if (newSql === oldSql || /UNIQUE COLLATE/.test(newSql)) throw new Error('users table migration: unexpected schema');
+  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name).join(', ');
+  const indexes = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'users' AND sql IS NOT NULL`).all().map((r) => r.sql);
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec('BEGIN');
+  try {
+    db.exec(newSql);
+    db.exec('ALTER TABLE users_v2 ADD COLUMN tag TEXT');
+    db.exec(`INSERT INTO users_v2 (${cols}) SELECT ${cols} FROM users`);
+    db.exec('DROP TABLE users');
+    db.exec('ALTER TABLE users_v2 RENAME TO users');
+    for (const sql of indexes) db.exec(sql);
+    const used = new Set();
+    for (const u of db.prepare('SELECT id, username, is_system FROM users').all()) {
+      let tag = '0000';
+      if (!u.is_system) {
+        do { tag = String(1 + crypto.randomInt(9999)).padStart(4, '0'); } while (used.has(`${u.username.toLowerCase()}#${tag}`));
+      }
+      used.add(`${u.username.toLowerCase()}#${tag}`);
+      db.prepare('UPDATE users SET tag = ? WHERE id = ?').run(tag, u.id);
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); db.exec('PRAGMA foreign_keys = ON'); throw e; }
+  db.exec('PRAGMA foreign_keys = ON');
+  const bad = db.prepare('PRAGMA foreign_key_check').all();
+  if (bad.length) throw new Error('users table migration broke foreign keys');
+}
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle ON users(username COLLATE NOCASE, tag)');
+// Old names are held for 30 days after a change (name + tag).
+if (db.prepare('PRAGMA table_info(username_holds)').all().some((c) => c.name === 'username')
+    && !db.prepare('PRAGMA table_info(username_holds)').all().some((c) => c.name === 'tag')) db.exec('DROP TABLE username_holds');
 db.exec(`
 CREATE TABLE IF NOT EXISTS username_holds (
-  username TEXT PRIMARY KEY COLLATE NOCASE,
+  username TEXT NOT NULL COLLATE NOCASE,
+  tag      TEXT NOT NULL,
   user_id  TEXT NOT NULL,
-  until    INTEGER NOT NULL
+  until    INTEGER NOT NULL,
+  PRIMARY KEY (username, tag)
 );
 `);
 

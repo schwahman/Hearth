@@ -301,7 +301,7 @@ async function main() {
 
   const exp = await fetch(BASE + '/api/users/@me/export', { headers: { Authorization: 'Bearer ' + D } });
   const expData = await exp.json();
-  assert.equal(expData.account.username, 'dave');
+  assert.match(expData.account.username, /^dave#\d{4}$/);
   assert.ok(expData.messages.some((m) => m.content === 'hi from dave'));
   assert.ok(!JSON.stringify(expData).includes('scrypt$'));
   ok('download my data (no password hash included)');
@@ -592,20 +592,20 @@ async function main() {
   // ---------------- admin activity, join messages, alerts ----------------
   assert.equal((await req('GET', '/admin/activity', null, JN)).status, 404);
   const act = (await req('GET', '/admin/activity', null, OW)).data;
-  const kinds = act.items.map((i) => `${i.kind}:${i.detail.username || i.detail.name || ''}`);
+  const kinds = act.items.map((i) => `${i.kind}:${(i.detail.username || i.detail.name || '').replace(/#\d{4}$/, '')}`);
   for (const k of ['user.register:mover', 'server.import:Retro Gamers', 'member.join:joiner']) assert.ok(kinds.includes(k), k);
   assert.ok(act.items.some((i) => i.kind === 'server.create'));
   assert.ok(act.summary.accounts >= 5 && act.summary.newAccounts.day >= 5 && act.summary.joins.day >= 1);
   assert.ok(!kinds.some((k) => k.includes('discord-archive')));
   const allServers = (await req('GET', '/admin/servers', null, OW)).data;
   const rg = allServers.find((x) => x.name === 'Retro Gamers');
-  assert.ok(rg && rg.imported && rg.members === 2 && rg.owner === 'mover');
+  assert.ok(rg && rg.imported && rg.members === 2 && /^mover#\d{4}$/.test(rg.owner));
   assert.equal((await req('GET', '/admin/servers', null, JN)).status, 404);
   await req('POST', '/admin/activity/seen', null, OW);
   ok('Hearth admins see sign-ups, new servers, imports and joins, plus a list of every server');
 
   const ilog = (await req('GET', `/servers/${done.serverId}/audit-log`, null, IM)).data;
-  assert.ok(ilog.some((e) => e.action === 'member.join' && /Invite .* from mover/.test(e.reason)));
+  assert.ok(ilog.some((e) => e.action === 'member.join' && /Invite .* from mover#\d{4}/.test(e.reason)));
   // Imported servers don't post join messages until the owner picks a channel.
   const sysSrv = (await req('GET', `/servers/${done.serverId}`, null, IM)).data;
   assert.equal(sysSrv.systemChannelId, null);
@@ -639,18 +639,33 @@ async function main() {
   const RN = (await req('POST', '/auth/register', { acceptTerms: true, username: 'renamer', password: 'swap names phrase 6', returnToken: true })).data.token;
   assert.equal((await req('POST', '/users/@me/username', { username: 'renamed1', password: 'wrong password here' }, RN)).status, 403);
   assert.equal((await req('POST', '/users/@me/username', { username: 'Support', password: 'swap names phrase 6' }, RN)).status, 400);
-  assert.equal((await req('POST', '/users/@me/username', { username: 'joiner', password: 'swap names phrase 6' }, RN)).status, 409);
+  const rnMe = (await req('GET', '/users/@me', null, RN)).data;
+  const joinerTag = (await req('GET', `/servers/${done.serverId}`, null, IM)).data.members.find((m) => m.user.username === 'joiner').user.tag;
+  assert.equal((await req('POST', '/users/@me/username', { username: `joiner#${joinerTag}`, password: 'swap names phrase 6' }, RN)).status, 409);
+  assert.equal((await req('POST', '/users/@me/username', { username: 'renamed1#0000', password: 'swap names phrase 6' }, RN)).status, 400);
   const rn = await req('POST', '/users/@me/username', { username: 'renamed1', password: 'swap names phrase 6' }, RN);
   assert.equal(rn.status, 200); assert.equal(rn.data.username, 'renamed1'); assert.ok(rn.data.nextUsernameChange > Date.now() + 29 * 86400000);
+  assert.equal(rn.data.tag, rnMe.tag); // keeps its number when it can
   const again = await req('POST', '/users/@me/username', { username: 'renamed2', password: 'swap names phrase 6' }, RN);
   assert.equal(again.status, 429); assert.match(again.data.error, /again on/);
-  assert.equal((await req('POST', '/auth/register', { acceptTerms: true, username: 'Renamer', password: 'grab old name phrase 7' })).status, 409);
-  assert.equal((await req('POST', '/auth/login', { username: 'renamed1', password: 'swap names phrase 6' })).status, 200);
+  assert.equal((await req('POST', '/auth/register', { acceptTerms: true, username: `Renamer#${rnMe.tag}`, password: 'grab old name phrase 7' })).status, 409); // old name#tag held
+  // Same name, different number: fine.
+  const twin = await req('POST', '/auth/register', { acceptTerms: true, username: 'renamed1', password: 'twin names phrase 8', returnToken: true });
+  assert.equal(twin.status, 200); assert.notEqual(twin.data.user.tag, rn.data.tag);
+  const amb = await req('POST', '/auth/login', { username: 'renamed1', password: 'swap names phrase 6' });
+  assert.equal(amb.status, 400); assert.match(amb.data.error, /name#1234/);
+  assert.equal((await req('POST', '/auth/login', { username: `renamed1#${rn.data.tag}`, password: 'swap names phrase 6' })).status, 200);
+  assert.equal((await req('POST', '/dms', { username: 'renamed1' }, JN)).status, 400);
+  assert.equal((await req('POST', '/dms', { username: `renamed1#${twin.data.user.tag}` }, JN)).status, 200);
+  const picked = await req('POST', '/auth/register', { acceptTerms: true, username: 'picky#77', password: 'chosen number phrase 9', returnToken: true });
+  assert.equal(picked.data.user.tag, '0077');
+  assert.equal((await req('POST', '/auth/register', { acceptTerms: true, username: 'Picky#0077', password: 'chosen number phrase 9' })).status, 409);
   const rnId = (await req('GET', '/users/@me', null, RN)).data.id;
   assert.equal((await req('POST', `/admin/users/${rnId}/username`, { username: 'cleanname' }, OW)).status, 400); // reason needed
   assert.equal((await req('POST', `/admin/users/${rnId}/username`, { username: 'cleanname', reason: 'test' }, OW)).data.username, 'cleanname');
-  assert.ok((await req('GET', '/admin/activity', null, OW)).data.items.some((i) => i.kind === 'user.rename' && i.detail.username === 'renamed1'));
+  assert.ok((await req('GET', '/admin/activity', null, OW)).data.items.some((i) => i.kind === 'user.rename' && i.detail.username === `renamed1#${rn.data.tag}`));
   ok('usernames change once every 30 days with a password; old names are held; reserved names refused');
+  ok('names can repeat with a different #number; login and DMs need the number when a name is shared; pick your own number');
 
   cu.ws.close();
   ca.ws.close(); cb.ws.close();
