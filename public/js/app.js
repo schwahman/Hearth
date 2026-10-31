@@ -1619,7 +1619,7 @@ async function accountSecurityModal() {
             toast(`Code sent to ${email.value.trim()}`);
             codeRow.classList.remove('hidden'); codeRow.style.display = 'grid'; code.focus();
           } else {
-            toast('Email saved.');
+            toast(r.sendFailed ? 'Email saved, but the verification email couldn\u2019t be sent yet. You can verify it later from the yellow bar.' : 'Email saved.');
             draw(r.security);
           }
         } catch (e) {
@@ -3043,6 +3043,8 @@ async function adminActivity() {
       : !data.hasVerifiedEmail ? 'Add and verify your email (Profile → Account recovery) to get alerts.'
         : sel.value === 'off' ? '' : 'Sent to your verified email address.';
   };
+  const mailWarn = data.mailError ? el('div', { class: 'wiz-box warn' }, el('strong', {}, '\u26A0 Email isn\u2019t sending. '),
+    data.mailError.hint, el('div', { class: 'muted small' }, `Last error ${fmtTime(data.mailError.at)}: ${data.mailError.message}`)) : null;
   sel.onchange = async () => { try { await api('PUT', '/admin/alerts', { mode: sel.value }); toast('Saved'); } catch (e) { toast(e.message); } explain(); };
   explain();
   return el('div', { style: { display: 'grid', gap: '12px' } },
@@ -3050,7 +3052,7 @@ async function adminActivity() {
       stat(sm.accounts, 'accounts', `+${sm.newAccounts.day} today · +${sm.newAccounts.week} this week`),
       stat(sm.servers, 'servers', `+${sm.newServers.day} today · +${sm.newServers.week} this week`),
       stat(sm.joins.week, 'joins this week', `${sm.joins.day} today`)),
-    el('label', {}, 'Email me about new activity', sel), note,
+    mailWarn, el('label', {}, 'Email me about new activity', sel), note,
     list, more,
     el('p', { class: 'muted small', style: { margin: 0 } }, 'Shows names only, never messages. Kept for 30 days.'));
 }

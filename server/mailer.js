@@ -23,6 +23,19 @@ const cfg = {
 
 const configured = () => !!(cfg.host && cfg.from);
 const devOutbox = []; // MAIL_DEV only, for tests
+let lastError = null; // { message, hint, at } from the most recent failed send
+
+// Plain-English advice for common SMTP failures (shown to Hearth admins).
+function hintFor(msg) {
+  if (/\b535\b|BadCredentials|Username and Password not accepted|AUTH/i.test(msg)) {
+    return 'The email provider rejected the login. Check SMTP_USER (the full address) and SMTP_PASS (for Gmail, a 16-letter App Password with no spaces), then restart Hearth.';
+  }
+  if (/ENOTFOUND|EAI_AGAIN/.test(msg)) return 'The server name in SMTP_HOST couldn\u2019t be found. Check it for typos.';
+  if (/ECONNREFUSED|ETIMEDOUT|timeout/i.test(msg)) return 'Couldn\u2019t connect to the email server. Check SMTP_HOST and SMTP_PORT (587 or 465).';
+  if (/certificate|self.signed|CERT/i.test(msg)) return 'The email server\u2019s security certificate wasn\u2019t accepted.';
+  if (/\b5\.7\.0\b|\b530\b/.test(msg)) return 'The email provider wants extra verification for this account (for Gmail, make sure 2-Step Verification is on and use an App Password).';
+  return 'Check the SMTP settings in /etc/hearth.env.';
+}
 
 function addressOf(from) {
   const m = /<([^>]+)>/.exec(from);
@@ -57,8 +70,17 @@ async function sendMail({ to, subject, text }) {
     // Dot-stuffing: lines starting with "." get an extra "."
     String(text).replace(/\r?\n/g, '\r\n').replace(/^\./gm, '..'),
   ].join('\r\n');
-  await smtp(clean(to), msg);
-  return true;
+  // Failures are logged (without the password) and reported as "not sent",
+  // so callers can show a clear message instead of a server error.
+  try {
+    await smtp(clean(to), msg);
+    lastError = null;
+    return true;
+  } catch (e) {
+    lastError = { message: String(e.message || e).slice(0, 300), hint: hintFor(String(e.message || e)), at: Date.now() };
+    console.error(`[mail] could not send "${clean(subject)}": ${lastError.message} (${lastError.hint})`);
+    return false;
+  }
 }
 
 function smtp(to, message) {
@@ -119,4 +141,4 @@ function smtp(to, message) {
   });
 }
 
-module.exports = { sendMail, configured: () => configured() || cfg.dev, canSend: () => configured() || cfg.dev, devOutbox };
+module.exports = { sendMail, configured: () => configured() || cfg.dev, canSend: () => configured() || cfg.dev, devOutbox, lastError: () => lastError };

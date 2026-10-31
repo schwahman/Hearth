@@ -1544,6 +1544,7 @@ route('GET', '/api/admin/activity', ({ user, query }) => {
   const items = activity.list({ before: query.get('before') });
   const me = one('SELECT admin_seen_at, admin_alerts FROM users WHERE id = ?', user.id);
   return { items, summary: activity.summary(), seenAt: me.admin_seen_at, alerts: me.admin_alerts, canEmail: require('./mailer').canSend(),
+    mailError: require('./mailer').lastError(),
     hasVerifiedEmail: !!one('SELECT 1 FROM users WHERE id = ? AND email_verified_at IS NOT NULL', user.id) };
 });
 route('POST', '/api/admin/activity/seen', ({ user }) => { requireAdmin(user); activity.markSeen(user.id); return { unseen: 0 }; });

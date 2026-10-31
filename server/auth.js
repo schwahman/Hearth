@@ -315,7 +315,15 @@ async function requestEmailChange(userId, password, newEmail) {
     return { saved: true, verified: false };
   }
   hit(`email-change:${userId}`, 5, 3600 * 1000);
-  if (!(await sendCode(userId, 'change', e, e))) throw new HttpError(503, 'The verification email couldn\u2019t be sent. Try again later.');
+  if (!(await sendCode(userId, 'change', e, e))) {
+    // Couldn't send right now: keep the address (unverified) so it isn't
+    // lost; the person can verify it later from the yellow bar.
+    if (!u.email_verified_at) {
+      run('UPDATE users SET email_enc = ?, email_hash = ?, email_verified_at = NULL WHERE id = ?', secrets.encryptText('email', e), emailHash(e), userId);
+      return { saved: true, verified: false, sendFailed: true };
+    }
+    throw new HttpError(503, 'Hearth couldn\u2019t send the verification email right now. The site admin can see why in the server log (or the admin Activity tab). Try again later.');
+  }
   return { codeSent: true };
 }
 
