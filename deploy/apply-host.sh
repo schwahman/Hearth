@@ -18,8 +18,10 @@ cat > /usr/local/sbin/hearth-admin <<'TOOL'
 #!/usr/bin/env bash
 # Runs Hearth's admin tool as the hearth user with the server's settings.
 if [[ $EUID -ne 0 ]]; then echo "Run as root (or with sudo)." >&2; exit 1; fi
-set -a; . /etc/hearth.env; set +a
-exec runuser -u hearth -- env DATA_DIR="$DATA_DIR" /usr/local/bin/node --no-warnings /opt/hearth/server/cli.js "$@"
+# Read only DATA_DIR (don't run the settings file as a script: values like
+# MAIL_FROM=Hearth <x@y> are fine for systemd but not for the shell).
+DATA_DIR=$(grep -E '^[[:space:]]*DATA_DIR=' /etc/hearth.env 2>/dev/null | tail -n1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//')
+exec runuser -u hearth -- env DATA_DIR="${DATA_DIR:-/var/lib/hearth}" /usr/local/bin/node --no-warnings /opt/hearth/server/cli.js "$@"
 TOOL
 chmod 755 /usr/local/sbin/hearth-admin
 

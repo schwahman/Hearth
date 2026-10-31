@@ -108,7 +108,7 @@ SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=yourhearth@gmail.com
 SMTP_PASS=the 16-letter app password
-MAIL_FROM=Hearth <yourhearth@gmail.com>
+MAIL_FROM="Hearth <yourhearth@gmail.com>"
 ```
 
 Gmail allows about 500 emails a day, plenty for testing. Vultr blocks port 25 but not 587, so this works out of the box. For launch, switch to an email service with your own domain so messages come from it and don't land in spam.
