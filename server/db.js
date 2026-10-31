@@ -186,7 +186,9 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 // Columns added after v0.1.
 function addColumn(table, column, type) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
-  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  if (cols.includes(column)) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  return true;
 }
 addColumn('users', 'terms_accepted_at', 'INTEGER');
 addColumn('users', 'email_enc', 'TEXT');          // encrypted email address
@@ -352,6 +354,28 @@ CREATE TABLE IF NOT EXISTS admin_log (
   created_at INTEGER NOT NULL
 );
 `);
+
+// Sign-ups, new servers, joins and imports, for the Hearth admin Activity
+// feed and email alerts. Kept 30 days (see activity.js).
+db.exec(`
+CREATE TABLE IF NOT EXISTS activity (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,
+  user_id    TEXT,
+  server_id  TEXT,
+  detail     TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activity_time ON activity(created_at);
+`);
+addColumn('users', 'admin_seen_at', 'INTEGER NOT NULL DEFAULT 0');   // last time this admin opened the Activity feed
+addColumn('users', 'admin_alerts', "TEXT NOT NULL DEFAULT 'off'");  // email alerts: off, instant, daily
+addColumn('users', 'admin_alert_at', 'INTEGER NOT NULL DEFAULT 0');  // newest activity already emailed
+if (addColumn('servers', 'system_channel_id', 'TEXT')) {          // where "X joined the server" is posted (NULL = off)
+  // Existing servers: post join messages in their first text channel.
+  db.exec(`UPDATE servers SET system_channel_id = (SELECT id FROM channels c WHERE c.server_id = servers.id AND c.type = 'text'
+           ORDER BY c.position, c.id LIMIT 1)`);
+}
 
 // Moves recently deleted data out of the write-ahead log into the (securely
 // overwritten) main file, so nothing lingers there either.

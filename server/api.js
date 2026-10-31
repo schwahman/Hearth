@@ -15,6 +15,7 @@ const bus = require('./bus');
 const state = require('./state');
 const vault = require('./vault');
 const secrets = require('./secrets');
+const activity = require('./activity');
 
 const uploadsDir = path.join(config.dataDir, 'uploads');
 fs.mkdirSync(uploadsDir, { recursive: true });
@@ -193,6 +194,7 @@ route('POST', '/api/auth/register', async ({ req, res, body }) => {
     throw new HttpError(403, 'Registration is closed on this server.');
   }
   const { id, token } = await auth.register(body.username, body.password, body.displayName, meta(req), body.acceptTerms, body.email, body.birthdate);
+  activity.record('user.register', { userId: id, detail: { username: one('SELECT username FROM users WHERE id = ?', id).username } });
   return loginResponse(req, res, body, id, token);
 }, { public: true });
 
@@ -258,6 +260,7 @@ route('DELETE', '/api/users/@me', async ({ req, res, user, body }) => {
     run('DELETE FROM invites WHERE creator_id = ?', user.id);
     run('DELETE FROM member_roles WHERE user_id = ?', user.id);
     run('DELETE FROM users WHERE id = ?', user.id); // cascades: sessions, memberships, DMs, bans
+    activity.forgetUser(user.id);
     // DM conversations with nobody left in them go too.
     run(`DELETE FROM channels WHERE type = 'dm' AND id NOT IN (SELECT channel_id FROM dm_recipients)`);
   });
@@ -384,11 +387,14 @@ route('POST', '/api/servers', ({ user, body }) => {
     run('INSERT INTO members (server_id, user_id, joined_at) VALUES (?, ?, ?)', serverId, user.id, now);
     run(`INSERT INTO roles (id, server_id, name, permissions, position, is_default)
          VALUES (?, ?, '@everyone', ?, 0, 1)`, newId(), serverId, DEFAULT_EVERYONE);
+    const general = newId();
     run(`INSERT INTO channels (id, server_id, name, type, position, created_at) VALUES (?, ?, 'general', 'text', 0, ?)`,
-      newId(), serverId, now);
+      general, serverId, now);
+    run('UPDATE servers SET system_channel_id = ? WHERE id = ?', general, serverId);
     run(`INSERT INTO channels (id, server_id, name, type, position, created_at) VALUES (?, ?, 'General', 'voice', 1, ?)`,
       newId(), serverId, now);
   });
+  activity.record('server.create', { userId: user.id, serverId, detail: { name, owner: user.username } });
   const payload = ser.server(serverId, user.id);
   bus.publish(`user:${user.id}`, { t: 'SERVER_CREATE', d: payload });
   return payload;
@@ -402,6 +408,11 @@ route('GET', '/api/servers/:id', ({ user, params }) => {
 route('PATCH', '/api/servers/:id', ({ user, params, body }) => {
   requireServerPerm(params.id, user.id, P.MANAGE_SERVER);
   if (body.name !== undefined) run('UPDATE servers SET name = ? WHERE id = ?', str(body.name, 'Server name', 1, 64), params.id);
+  if (body.systemChannelId !== undefined) {
+    const ch = body.systemChannelId && one(`SELECT id FROM channels WHERE id = ? AND server_id = ? AND type = 'text'`, String(body.systemChannelId), params.id);
+    if (body.systemChannelId && !ch) throw new HttpError(400, 'Pick a text channel in this server.');
+    run('UPDATE servers SET system_channel_id = ? WHERE id = ?', ch ? ch.id : null, params.id);
+  }
   if (body.ageRating !== undefined) {
     run('UPDATE servers SET age_rating = ? WHERE id = ?', [0, 18, 21].includes(Number(body.ageRating)) ? Number(body.ageRating) : 0, params.id);
     permsChanged(params.id);
@@ -411,8 +422,8 @@ route('PATCH', '/api/servers/:id', ({ user, params, body }) => {
     run('UPDATE servers SET icon = ? WHERE id = ?', checkUploadUrl(body.icon), params.id);
     if (old && old !== body.icon) deleteUploadUrl(old);
   }
-  const s = one('SELECT id, name, icon FROM servers WHERE id = ?', params.id);
-  bus.publish(`server:${params.id}`, { t: 'SERVER_UPDATE', d: { id: s.id, name: s.name, icon: s.icon } });
+  const s = one('SELECT id, name, icon, system_channel_id FROM servers WHERE id = ?', params.id);
+  bus.publish(`server:${params.id}`, { t: 'SERVER_UPDATE', d: { id: s.id, name: s.name, icon: s.icon, systemChannelId: s.system_channel_id || null } });
   audit(params.id, user.id, 'server.update', { type: 'server', id: s.id, name: s.name });
   return s;
 });
@@ -460,6 +471,7 @@ function vaultServer(serverId, deletedBy) {
 
 function deleteServerData(serverId, s, deletedBy) {
   vaultServer(serverId, deletedBy);
+  activity.record('server.delete', { serverId, detail: { name: s.name, members: one('SELECT COUNT(*) AS n FROM members WHERE server_id = ?', serverId).n } });
   bus.publish(`server:${serverId}`, { t: 'SERVER_DELETE', d: { id: serverId } });
   const channelIds = all('SELECT id FROM channels WHERE server_id = ?', serverId).map((c) => c.id);
   run('DELETE FROM servers WHERE id = ?', serverId); // cascades to channels, messages, roles, members, invites, bans
@@ -494,6 +506,7 @@ route('DELETE', '/api/servers/:id/members/@me', ({ user, params }) => {
     throw new HttpError(400, 'The owner cannot leave. Delete the server instead.');
   }
   removeMember(params.id, user.id);
+  audit(params.id, user.id, 'member.leave', { type: 'user', id: user.id, name: user.username });
 });
 
 function guardTarget(serverId, actorId, targetId) {
@@ -633,6 +646,12 @@ route('POST', '/api/invites/:code', ({ user, params }) => {
       run('UPDATE invites SET uses = uses + 1 WHERE code = ?', inv.code);
     });
     bus.publish(`server:${serverId}`, { t: 'MEMBER_ADD', d: { serverId, member: ser.member(serverId, user.id) } });
+    const srv = one('SELECT name, system_channel_id FROM servers WHERE id = ?', serverId);
+    audit(serverId, user.id, 'member.join', { type: 'user', id: user.id, name: user.username }, `Invite ${inv.code} from ${userName(inv.creator_id)}`);
+    activity.record('member.join', { userId: user.id, serverId, detail: { username: user.username, server: srv.name } });
+    // "Kyle joined the server." in the server's chosen channel.
+    const sys = srv.system_channel_id && one(`SELECT * FROM channels WHERE id = ? AND server_id = ? AND type = 'text'`, srv.system_channel_id, serverId);
+    if (sys) postSystemMessage(sys, user.id, 'join', 'joined the server.');
   }
   const payload = ser.server(serverId, user.id);
   bus.publish(`user:${user.id}`, { t: 'SERVER_CREATE', d: payload });
@@ -1483,6 +1502,37 @@ route('GET', '/api/admin/vault/:id/files/:n', ({ user, params, res }) => {
     'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
   });
   res.end(f.body);
+});
+
+route('GET', '/api/admin/activity', ({ user, query }) => {
+  requireAdmin(user);
+  const items = activity.list({ before: query.get('before') });
+  const me = one('SELECT admin_seen_at, admin_alerts FROM users WHERE id = ?', user.id);
+  return { items, summary: activity.summary(), seenAt: me.admin_seen_at, alerts: me.admin_alerts, canEmail: require('./mailer').canSend(),
+    hasVerifiedEmail: !!one('SELECT 1 FROM users WHERE id = ? AND email_verified_at IS NOT NULL', user.id) };
+});
+route('POST', '/api/admin/activity/seen', ({ user }) => { requireAdmin(user); activity.markSeen(user.id); return { unseen: 0 }; });
+route('PUT', '/api/admin/alerts', ({ user, body }) => {
+  requireAdmin(user);
+  const mode = ['off', 'instant', 'daily'].includes(body.mode) ? body.mode : 'off';
+  // Start from now, so turning alerts on doesn't email the whole backlog.
+  run('UPDATE users SET admin_alerts = ?, admin_alert_at = ? WHERE id = ?', mode, Date.now(), user.id);
+  return { alerts: mode };
+});
+// Every server on this Hearth: names and sizes only (no messages).
+route('GET', '/api/admin/servers', ({ user, query }) => {
+  requireAdmin(user);
+  const q = String(query.get('q') || '').trim().slice(0, 64);
+  const rows = all(`SELECT s.id, s.name, s.created_at, s.age_rating, u.username AS owner,
+      (SELECT COUNT(*) FROM members m WHERE m.server_id = s.id) AS members,
+      (SELECT COUNT(*) FROM channels c WHERE c.server_id = s.id AND c.type != 'category') AS channels,
+      (SELECT MAX(m.created_at) FROM messages m JOIN channels c ON c.id = m.channel_id WHERE c.server_id = s.id AND m.import_source IS NULL AND (m.kind IS NULL OR m.kind != 'join')) AS last_message,
+      (SELECT 1 FROM import_jobs j WHERE j.server_id = s.id LIMIT 1) AS imported
+    FROM servers s LEFT JOIN users u ON u.id = s.owner_id
+    WHERE ? = '' OR s.name LIKE ? ESCAPE '\\' ORDER BY s.created_at DESC LIMIT 200`, q, `%${q.replace(/[%_\\]/g, (c) => '\\' + c)}%`);
+  vault.logAccess(user.id, 'servers.list', null, q);
+  return rows.map((r) => ({ id: r.id, name: r.name, owner: r.owner || 'deleted user', createdAt: r.created_at, members: r.members,
+    channels: r.channels, lastMessageAt: r.last_message || null, imported: !!r.imported, ageRating: r.age_rating || 0 }));
 });
 
 route('GET', '/api/admin/log', ({ user }) => {

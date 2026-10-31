@@ -510,6 +510,9 @@ async function runJob(jobId, handle) {
   run(`INSERT INTO audit_log (id, server_id, actor_id, action, target_type, target_id, target_name, reason, created_at)
        VALUES (?, ?, ?, 'server.import', 'server', ?, ?, ?, ?)`, newId(), serverId, job.user_id, serverId, guild.name,
   `Imported from Discord: ${progress.messages} messages, ${progress.files} files`, Date.now());
+  require('./activity').record('server.import', { userId: job.user_id, serverId, detail: {
+    name: (one('SELECT name FROM servers WHERE id = ?', serverId) || {}).name || guild.name,
+    owner: (one('SELECT username FROM users WHERE id = ?', job.user_id) || {}).username, messages: progress.messages } });
   const payload = ser.server(serverId, job.user_id);
   bus.publish(`user:${job.user_id}`, { t: 'SERVER_CREATE', d: payload });
   publish(jobId, true);

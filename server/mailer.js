@@ -46,7 +46,8 @@ async function sendMail({ to, subject, text }) {
   const msg = [
     `From: ${clean(cfg.from)}`,
     `To: ${clean(to)}`,
-    `Subject: ${clean(subject)}`,
+    // Non-ASCII subjects (like \u00D7 or emoji) must be encoded (RFC 2047).
+    `Subject: ${/[^\x20-\x7e]/.test(clean(subject)) ? `=?UTF-8?B?${Buffer.from(clean(subject)).toString('base64')}?=` : clean(subject)}`,
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: <${crypto.randomUUID()}@${domain}>`,
     'MIME-Version: 1.0',

@@ -15,7 +15,7 @@ const mockReady = mockDiscord.start(MOCK_PORT);
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-test-'));
 
 const srv = spawn(process.execPath, ['--no-warnings', path.join(__dirname, '..', 'server', 'index.js')], {
-  env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, MAIL_DEV: 'true', RATE_LIMIT_SCALE: '20',
+  env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, MAIL_DEV: 'true', RATE_LIMIT_SCALE: '20', ALERT_DELAY_MS: '300',
     DISCORD_API_BASE: `http://127.0.0.1:${MOCK_PORT}/api`, DISCORD_CDN_BASE: `http://127.0.0.1:${MOCK_PORT}/cdn` },
   stdio: ['ignore', 'pipe', 'inherit'],
 });
@@ -151,7 +151,8 @@ async function main() {
   for (let i = 0; i < 60; i++) await req('POST', `/channels/${general.id}/messages`, { content: `bulk ${i}` }, A);
   const page1 = (await req('GET', `/channels/${general.id}/messages?limit=50`, null, B)).data;
   const page2 = (await req('GET', `/channels/${general.id}/messages?limit=50&before=${page1[0].id}`, null, B)).data;
-  assert.equal(page1.length, 50); assert.equal(page2.length, 12);
+  assert.equal(page1.length, 50); assert.equal(page2.length, 13); // includes "joined the server"
+  assert.equal(page2[0].kind, 'join'); assert.equal(page2[0].content, 'joined the server.');
   assert.equal(page1.at(-1).content, 'bulk 59');
   ok('message history pagination');
 
@@ -587,6 +588,52 @@ async function main() {
   assert.equal((await req('POST', `/channels/${byName.general.id}/messages`, { content: 'https://media.giphy.com.evil.example/x.gif', kind: 'gif' }, IM)).status, 400);
   assert.equal((await req('PATCH', `/messages/${gm.data.id}`, { content: 'changed' }, IM)).status, 400);
   ok('GIF messages only accept GIPHY addresses and can\u2019t be edited into something else');
+
+  // ---------------- admin activity, join messages, alerts ----------------
+  assert.equal((await req('GET', '/admin/activity', null, JN)).status, 404);
+  const act = (await req('GET', '/admin/activity', null, OW)).data;
+  const kinds = act.items.map((i) => `${i.kind}:${i.detail.username || i.detail.name || ''}`);
+  for (const k of ['user.register:mover', 'server.import:Retro Gamers', 'member.join:joiner']) assert.ok(kinds.includes(k), k);
+  assert.ok(act.items.some((i) => i.kind === 'server.create'));
+  assert.ok(act.summary.accounts >= 5 && act.summary.newAccounts.day >= 5 && act.summary.joins.day >= 1);
+  assert.ok(!kinds.some((k) => k.includes('discord-archive')));
+  const allServers = (await req('GET', '/admin/servers', null, OW)).data;
+  const rg = allServers.find((x) => x.name === 'Retro Gamers');
+  assert.ok(rg && rg.imported && rg.members === 2 && rg.owner === 'mover');
+  assert.equal((await req('GET', '/admin/servers', null, JN)).status, 404);
+  await req('POST', '/admin/activity/seen', null, OW);
+  ok('Hearth admins see sign-ups, new servers, imports and joins, plus a list of every server');
+
+  const ilog = (await req('GET', `/servers/${done.serverId}/audit-log`, null, IM)).data;
+  assert.ok(ilog.some((e) => e.action === 'member.join' && /Invite .* from mover/.test(e.reason)));
+  // Imported servers don't post join messages until the owner picks a channel.
+  const sysSrv = (await req('GET', `/servers/${done.serverId}`, null, IM)).data;
+  assert.equal(sysSrv.systemChannelId, null);
+  await req('PATCH', `/servers/${done.serverId}`, { systemChannelId: byName.welcome.id }, IM);
+  const JN2 = (await req('POST', '/auth/register', { acceptTerms: true, username: 'joiner2', password: 'second joiner phrase 4', returnToken: true })).data.token;
+  await req('POST', `/invites/${iinv.code}`, null, JN2);
+  const wel = (await req('GET', `/channels/${byName.welcome.id}/messages`, null, IM)).data;
+  assert.equal(wel.at(-1).kind, 'join'); assert.equal(wel.at(-1).author.username, 'joiner2');
+  assert.equal((await req('PATCH', `/servers/${done.serverId}`, { systemChannelId: byName.Lounge.id }, IM)).status, 400);
+  await req('DELETE', `/servers/${done.serverId}/members/@me`, null, JN2);
+  assert.ok((await req('GET', `/servers/${done.serverId}/audit-log`, null, IM)).data.some((e) => e.action === 'member.leave'));
+  ok('join messages post in the chosen channel; joins (with invite) and leaves go in the audit log');
+
+  const sec = (await req('GET', '/users/@me/security', null, OW)).data;
+  if (!sec.emailVerified) {
+    const code = await lastCodeFor('alice@test.example', /verification code is:\s+(\d{6})/);
+    assert.equal((await req('POST', '/users/@me/email/verify', { code }, OW)).data.emailVerified, true);
+  }
+  await req('PUT', '/admin/alerts', { mode: 'instant' }, OW);
+  await req('POST', '/auth/register', { acceptTerms: true, username: 'tester9', password: 'testing alerts phrase 5' });
+  let alertMail;
+  for (let t = 0; t < 40 && !alertMail; t++) {
+    alertMail = [...mail, outBuf].find((m) => m.includes('to=alice@test.example') && m.includes('New account @tester9'));
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(alertMail, 'alert email sent');
+  assert.match(alertMail, /subject="Hearth: 1 \u00D7 New account"/);
+  ok('admins can get an email when someone signs up or creates a server');
 
   cu.ws.close();
   ca.ws.close(); cb.ws.close();

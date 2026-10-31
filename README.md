@@ -96,9 +96,22 @@ All optional, set as environment variables.
 | `VAULT_DAYS` | `30` | How long encrypted copies of deleted content are kept |
 | `MAIL_DEV` | `false` | Testing only: print emails to the log instead of sending |
 | `GIPHY_API_KEY` | | Turns on GIF search (`/gif` and the GIF button). Free key from developers.giphy.com; see below |
+| `ALERT_DELAY_MS` | `180000` | How long admin "right away" alerts wait to group activity into one email |
 | `IMPORT_MAX_GB` | `5` | Most file data one Discord import may copy |
 | `IMPORT_MAX_JOBS` | `2` | Discord imports that can run at once |
 | `TRUST_PROXY` | `false` | Set `true` only behind your own reverse proxy, so rate limits see real visitor addresses |
+
+**Email for testing (free, Gmail):** make a new Gmail account just for Hearth (not your personal one). Turn on 2-Step Verification for it, then create an App Password at myaccount.google.com/apppasswords. Put this in `/etc/hearth.env` and run `systemctl restart hearth`:
+
+```
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=yourhearth@gmail.com
+SMTP_PASS=the 16-letter app password
+MAIL_FROM=Hearth <yourhearth@gmail.com>
+```
+
+Gmail allows about 500 emails a day, plenty for testing. Vultr blocks port 25 but not 587, so this works out of the box. For launch, switch to an email service with your own domain so messages come from it and don't land in spam.
 
 **GIFs:** create an app at developers.giphy.com, copy its API key into `GIPHY_API_KEY`, and restart. New keys are "beta" keys limited to about 100 searches an hour for the whole site, which is fine for testing; before launching, apply for a production key in GIPHY's dashboard. GIPHY's rules require GIFs and searches to load straight from GIPHY on each device (Hearth can't copy or proxy them) and "Powered by GIPHY" to be shown, which the picker does. (Google shut down the Tenor GIF API in June 2026, so GIPHY is used instead.)
 

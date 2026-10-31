@@ -167,6 +167,7 @@ function ready(session) {
       iceServers: config.iceServers,
       gifs: config.giphyKey ? { provider: 'giphy', key: config.giphyKey } : null,
       blocked: all('SELECT blocked_id FROM blocks WHERE user_id = ?', u.id).map((r) => r.blocked_id),
+      ...(isAdmin ? { adminUnseen: require('./activity').unseenCount(u.id) } : {}),
     },
   });
 }

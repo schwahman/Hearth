@@ -251,6 +251,7 @@ gw.on('READY', async (d) => {
   S.dms = new Map(d.dms.map((c) => [c.id, c]));
   S.dmVoice = d.dmVoiceStates;
   S.blocked = new Set(d.blocked || []);
+  S.adminUnseen = d.adminUnseen || 0;
   S.messages.clear();
   renderMe();
   renderRail();
@@ -474,6 +475,12 @@ gw.on('BLOCKS_UPDATE', ({ userId, blocked }) => {
 });
 gw.on('REPORTS_CHANGED', ({ serverId }) => {
   if (S.serverId === serverId && can(P.MODERATE_MEMBERS)) toast('The report queue changed (Server settings \u2192 Reports).');
+});
+gw.on('ADMIN_ACTIVITY', (a) => {
+  S.adminUnseen = (S.adminUnseen || 0) + 1;
+  updateAdminButton();
+  if (ADMIN_LIVE.onActivity) ADMIN_LIVE.onActivity(a);
+  else if (a.kind !== 'member.join') toast(`\u{1F6E1} ${activityText(a)}`);
 });
 gw.on('ADMIN_REPORT', ({ category }) => {
   toast(category === 'child_safety' ? 'URGENT: new child-safety report in the Hearth admin panel.' : 'New report in the Hearth admin panel.');
@@ -821,7 +828,7 @@ function messageNodes(m, prev, bucket) {
   }
   // Slash-command results (/me, dice, coin) are shown as one action line.
   if (m.kind && m.kind !== 'gif') {
-    const icon = { me: '*', roll: '\u{1F3B2}', flip: '\u{1FA99}' }[m.kind] || '*';
+    const icon = { me: '*', roll: '\u{1F3B2}', flip: '\u{1FA99}', join: '\u2192' }[m.kind] || '*';
     out.push(el('div', { class: 'msg action-msg', 'data-id': m.id }, el('div', { class: 'gutter' }, el('span', { class: 'action-icon' }, icon)),
       el('div', { class: 'body' }, el('strong', { style: { color: roleColor(m.author.id) || '' } }, displayName(m.author)), ' ',
         el('span', { html: renderMarkdown(m.content) }), ' ', el('span', { class: 'time' }, fmtTime(m.createdAt))),
@@ -1222,10 +1229,14 @@ function overviewTab(s, dlg) {
     const icon = el('input', { type: 'file', accept: 'image/*' });
     const age = el('select', {}, [[0, 'Everyone (13+)'], [18, '18+ only'], [21, '21+ only']]
       .map(([v, l]) => el('option', { value: v, selected: (s.ageRating || 0) === v }, l)));
+    const joinCh = el('select', {}, el('option', { value: '' }, 'Off (don\u2019t post join messages)'),
+      s.channels.filter((c) => c.type === 'text').map((c) => el('option', { value: c.id, selected: s.systemChannelId === c.id }, '#' + c.name)));
     wrap.append(lbl, el('label', {}, 'Server icon', icon), el('label', {}, 'Age requirement for the whole server', age),
+      el('label', {}, 'Welcome new members in', joinCh),
+      el('p', { class: 'muted small', style: { margin: '-8px 0 0' } }, 'Posts "Name joined the server." when someone joins with an invite.'),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: async () => {
         try {
-          const patch = { name: name.value, ageRating: Number(age.value) };
+          const patch = { name: name.value, ageRating: Number(age.value), systemChannelId: joinCh.value || null };
           if (icon.files[0]) patch.icon = (await upload('/uploads/avatar', icon.files[0])).url;
           await api('PATCH', `/servers/${s.id}`, patch);
           toast('Saved');
@@ -2083,6 +2094,12 @@ function updateAdminButton() {
       b = el('button', { class: 'rail-btn admin', id: 'admin-btn', title: 'Hearth admin', onclick: adminPanel }, '\u{1F6E1}');
       $('rail').insertBefore(b, $('add-server-btn'));
     }
+    let badge = b.querySelector('.count-badge');
+    if (S.adminUnseen > 0) {
+      if (!badge) { badge = el('span', { class: 'count-badge' }); b.append(badge); }
+      badge.textContent = S.adminUnseen > 99 ? '99+' : String(S.adminUnseen);
+      b.title = `Hearth admin: ${S.adminUnseen} new`;
+    } else if (badge) { badge.remove(); b.title = 'Hearth admin'; }
   } else if (b) b.remove();
 }
 
@@ -2099,20 +2116,21 @@ function askReason(title, hint) {
 }
 
 function adminPanel() {
-  const tabs = [['reports', 'Reports'], ['users', 'Users'], ['holds', 'Legal holds'], ['vault', 'Retention vault'], ['log', 'Admin log']];
+  const tabs = [['activity', 'Activity'], ['servers', 'Servers'], ['reports', 'Reports'], ['users', 'Users'], ['holds', 'Legal holds'], ['vault', 'Retention vault'], ['log', 'Admin log']];
   const body = el('div');
   const tabBar = el('div', { class: 'tabs', style: { overflowX: 'auto' } });
   const show = async (key) => {
     tabBar.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.k === key));
     body.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
-    try { body.replaceChildren(await ({ reports: adminReports, users: adminUsers, holds: adminHolds, vault: adminVault, log: adminLog })[key](show)); }
+    ADMIN_LIVE.onActivity = null;
+    try { body.replaceChildren(await ({ activity: adminActivity, servers: adminServers, reports: adminReports, users: adminUsers, holds: adminHolds, vault: adminVault, log: adminLog })[key](show)); }
     catch (e) { body.replaceChildren(el('p', { class: 'error' }, e.message)); }
   };
   for (const [k, l] of tabs) tabBar.append(el('button', { 'data-k': k, onclick: () => show(k) }, l));
   modal([el('h2', {}, 'Hearth admin'),
     el('p', { class: 'muted small', style: { margin: 0 } }, 'Platform-wide safety tools. Everything you open or do here is recorded in the admin log.'),
-    tabBar, body], { wide: true });
-  show('reports');
+    tabBar, body], { wide: true, onClose: () => { ADMIN_LIVE.onActivity = null; } });
+  show('activity');
 }
 
 async function adminReports() {
@@ -2957,5 +2975,85 @@ function gifPicker(initial = '') {
   load(false);
 }
 $('gif-btn').addEventListener('click', () => (gifPop ? gifPop.close() : gifPicker()));
+
+
+// ---------------------------------------------------------------- admin: activity & servers
+const ADMIN_LIVE = { onActivity: null };
+function activityText(a) {
+  const d = a.detail || {};
+  switch (a.kind) {
+    case 'user.register': return `New account: @${d.username}`;
+    case 'server.create': return `@${d.owner} created "${d.name}"`;
+    case 'server.import': return `@${d.owner} moved "${d.name}" from Discord (${(d.messages || 0).toLocaleString()} messages)`;
+    case 'server.delete': return `Server "${d.name}" was deleted`;
+    case 'member.join': return `@${d.username} joined "${d.server}"`;
+    case 'user.delete': return 'An account was deleted';
+    default: return a.label || a.kind;
+  }
+}
+const ACTIVITY_ICON = { 'user.register': '★', 'server.create': '■', 'server.import': '⇨', 'server.delete': '✖', 'member.join': '→', 'user.delete': '✖' };
+
+async function adminActivity() {
+  const data = await api('GET', '/admin/activity');
+  const seenAt = data.seenAt;
+  api('POST', '/admin/activity/seen').catch(() => {});
+  S.adminUnseen = 0; updateAdminButton();
+  const sm = data.summary;
+  const stat = (n, label, sub) => el('div', { class: 'stat' }, el('div', { class: 'stat-n' }, String(n)), el('div', { class: 'stat-l' }, label), sub ? el('div', { class: 'muted small' }, sub) : null);
+  const row = (a, isNew) => el('div', { class: 'list-row activity-row' + (isNew ? ' new' : '') },
+    el('span', { class: 'act-icon' }, ACTIVITY_ICON[a.kind] || '•'),
+    el('div', {}, activityText(a)), el('span', { class: 'spacer' }),
+    el('span', { class: 'muted small', title: new Date(a.createdAt).toLocaleString() }, fmtTime(a.createdAt)));
+  const list = el('div', { class: 'activity-list' }, data.items.length ? data.items.map((a) => row(a, a.createdAt > seenAt))
+    : [el('p', { class: 'muted' }, 'Nothing yet. Sign-ups, new servers and joins will show up here.')]);
+  const more = el('button', { class: 'btn small', style: { display: data.items.length >= 50 ? '' : 'none' } }, 'Older');
+  more.onclick = async () => {
+    const last = list.lastChild && data.items.at(-1);
+    const older = await api('GET', `/admin/activity?before=${last.createdAt}`);
+    data.items.push(...older); older.forEach((a) => list.append(row(a, false)));
+    if (older.length < 50) more.style.display = 'none';
+  };
+  ADMIN_LIVE.onActivity = (a) => {
+    if (list.firstChild && list.firstChild.tagName === 'P') list.replaceChildren();
+    list.prepend(row(a, true)); S.adminUnseen = 0; updateAdminButton();
+    api('POST', '/admin/activity/seen').catch(() => {});
+  };
+  // Email alerts
+  const sel = el('select', {}, [['off', 'Off'], ['instant', 'Right away (new accounts and servers)'], ['daily', 'Once a day (summary of everything)']]
+    .map(([v, l]) => el('option', { value: v, selected: data.alerts === v }, l)));
+  const note = el('p', { class: 'muted small', style: { margin: 0 } });
+  const explain = () => {
+    note.textContent = !data.canEmail ? 'Email sending isn’t set up on this Hearth yet, so alerts can’t be sent. See the README (Settings → SMTP).'
+      : !data.hasVerifiedEmail ? 'Add and verify your email (Profile → Account recovery) to get alerts.'
+        : sel.value === 'off' ? '' : 'Sent to your verified email address.';
+  };
+  sel.onchange = async () => { try { await api('PUT', '/admin/alerts', { mode: sel.value }); toast('Saved'); } catch (e) { toast(e.message); } explain(); };
+  explain();
+  return el('div', { style: { display: 'grid', gap: '12px' } },
+    el('div', { class: 'stats' },
+      stat(sm.accounts, 'accounts', `+${sm.newAccounts.day} today · +${sm.newAccounts.week} this week`),
+      stat(sm.servers, 'servers', `+${sm.newServers.day} today · +${sm.newServers.week} this week`),
+      stat(sm.joins.week, 'joins this week', `${sm.joins.day} today`)),
+    el('label', {}, 'Email me about new activity', sel), note,
+    list, more,
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'Shows names only, never messages. Kept for 30 days.'));
+}
+
+async function adminServers() {
+  const q = el('input', { type: 'search', placeholder: 'Search server names' });
+  const list = el('div');
+  const load = async () => {
+    const rows = await api('GET', `/admin/servers?q=${encodeURIComponent(q.value.trim())}`);
+    list.replaceChildren(...(rows.length ? rows.map((r) => el('div', { class: 'list-row' },
+      el('div', {}, el('strong', {}, r.name), r.imported ? el('span', { class: 'tag archived-tag' }, 'FROM DISCORD') : null,
+        r.ageRating ? el('span', { class: 'age-badge', style: { marginLeft: '6px' } }, `${r.ageRating}+`) : null,
+        el('div', { class: 'muted small' }, `Owner @${r.owner} · ${r.members} member${r.members === 1 ? '' : 's'} · ${r.channels} channels · created ${fmtTime(r.createdAt)}`
+          + (r.lastMessageAt ? ` · last message ${fmtTime(r.lastMessageAt)}` : ' · no messages yet'))))) : [el('p', { class: 'muted' }, 'No servers found.')]));
+  };
+  let t; q.addEventListener('input', () => { clearTimeout(t); t = setTimeout(load, 300); });
+  await load();
+  return el('div', { style: { display: 'grid', gap: '10px' } }, q, list,
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'Names and sizes only. Message content is only opened through a report or the retention vault, and is logged.'));
+}
 
 boot();
