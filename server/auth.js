@@ -424,6 +424,8 @@ function accountSecurity(userId) {
     emailVerified: e ? e.verified : false,
     recoveryCodesLeft: rc.n ? rc.left : null,
     emailEnabled: mailer.configured(),
+    google: (() => { const g = one('SELECT google_email_enc FROM users WHERE id = ? AND google_sub IS NOT NULL', userId); return g ? { email: g.google_email_enc ? secrets.decryptText('email', g.google_email_enc) : null } : null; })(),
+    googleAvailable: require('./oauth').enabled(),
   };
 }
 
@@ -449,7 +451,9 @@ function setBirthdate(userId, value) {
 }
 
 // ---------- account actions ----------
-async function register(username, password, displayName, meta, acceptedTerms, email, birthdate) {
+// opts.verifiedEmail: the address was already proven (e.g. by Google), so no
+// code is sent. opts.googleSub: link this Google account.
+async function register(username, password, displayName, meta, acceptedTerms, email, birthdate, opts = {}) {
   // Up to 30 tries an hour (people fumble the rules), but at most 5 new
   // accounts an hour from one address.
   hit(`reg:${meta.ip}`, 30, 3600 * 1000);
@@ -480,7 +484,9 @@ async function register(username, password, displayName, meta, acceptedTerms, em
     id, uname, tag, String(displayName || uname).trim().slice(0, 32) || uname, hash, now, now,
     secrets.encryptText('email', normEmail), emailHash(normEmail), first ? 1 : 0);
   run('UPDATE users SET birthdate_enc = ? WHERE id = ?', secrets.encryptText('birthdate', dob), id);
-  sendCode(id, 'verify', normEmail).catch((e) => console.warn('[mail] verification email failed:', e.message));
+  if (opts.googleSub) run('UPDATE users SET google_sub = ? WHERE id = ?', opts.googleSub, id);
+  if (opts.verifiedEmail) run('UPDATE users SET email_verified_at = ? WHERE id = ?', now, id);
+  else sendCode(id, 'verify', normEmail).catch((e) => console.warn('[mail] verification email failed:', e.message));
   return { id, token: createSession(id, meta) };
 }
 
@@ -594,7 +600,13 @@ async function login(username, password, meta) {
   username = String(username || '').slice(0, 64);
   password = typeof password === 'string' ? password.slice(0, PASSWORD_MAX + 1) : '';
   checkLock(username);
-  const found = findByHandle(username, 'AND is_system = 0');
+  // Log in with an email address, a username (name or name#tag).
+  let found;
+  if (username.includes('@')) {
+    let u = null;
+    try { u = one('SELECT * FROM users WHERE email_hash = ? AND is_system = 0', emailHash(normalizeEmail(username))); } catch { /* not a valid address */ }
+    found = { user: u || undefined };
+  } else found = findByHandle(username, 'AND is_system = 0');
   if (found.ambiguous) {
     // Several accounts use this name: say so (without checking the
     // password), so people know to add their #number.
@@ -632,5 +644,5 @@ module.exports = {
   register, login, changePassword, resendVerification, verifyEmail, requestEmailChange, confirmEmailChange,
   forgotPassword, resetPassword, generateRecoveryCodes, accountSecurity, userEmail, hit, setBirthdate, createSession, userFromToken, revokeSession, revokeAllSessions,
   listSessions, revokeSessionById, hashPassword, verifyPassword, hashToken, HttpError, PASSWORD_MIN,
-  changeUsername, nextUsernameChange, USERNAME_DAYS, parseHandle, handleOf, findByHandle,
+  normalizeEmail, emailHash, changeUsername, nextUsernameChange, USERNAME_DAYS, parseHandle, handleOf, findByHandle,
 };

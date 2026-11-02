@@ -163,6 +163,8 @@ function setAuthMode(reg) {
   $('auth-submit').textContent = reg ? 'Register' : 'Log in';
   $('auth-toggle').textContent = reg ? 'Have an account? Log in' : 'Need an account? Register';
   $('auth-display-wrap').classList.toggle('hidden', !reg);
+  $('auth-username-label').textContent = reg ? 'Username' : 'Username or email';
+  $('auth-username').placeholder = reg ? 'name (Hearth adds a #number)' : 'name, name#1234 or you@email.com';
   for (const id of ['auth-email-wrap', 'auth-dob-wrap', 'auth-dob-hint', 'auth-password2-wrap']) $(id).classList.toggle('hidden', !reg);
   $('auth-password2').required = reg;
   $('auth-email').required = reg;
@@ -223,15 +225,67 @@ function inviteCodeFromUrl() {
 }
 
 async function boot() {
+  // Coming back from Google: finish sign-up, or show what went wrong.
+  const gp = new URLSearchParams(location.search);
+  const google = gp.get('google');
+  if (google) history.replaceState(null, '', location.pathname);
+  // (Google doesn't allow its sign-in inside desktop apps like ours, so the
+  // desktop app uses username/email + password; link Google on the website.)
+  api('GET', '/config').then((c) => { if (c && c.googleLogin && !window.hearthDesktop) $('auth-google-wrap').classList.remove('hidden'); }).catch(() => {});
+  if (google === 'signup') return googleSignup();
   const code = inviteCodeFromUrl();
   let invite = null;
   if (code) invite = await api('GET', `/invites/${code}`).catch(() => null);
   try {
     S.me = await api('GET', '/users/@me');
     start();
+    if (google === 'linked') setTimeout(() => toast('Google account linked. You can now sign in with Google.'), 800);
+    if (google === 'error') setTimeout(() => toast(gp.get('m') || 'Google sign-in didn\u2019t work.'), 800);
   } catch {
     showAuth(invite);
+    if (google === 'error') $('auth-error').textContent = gp.get('m') || 'Google sign-in didn\u2019t work. Please try again.';
   }
+}
+
+// New to Hearth via Google: pick a username, confirm age and terms, and
+// set a password (used to confirm important changes and as a backup way in).
+async function googleSignup() {
+  let p;
+  try { p = await api('GET', '/auth/google/pending'); } catch (e) { showAuth(null); $('auth-error').textContent = e.message; return; }
+  $('app').classList.add('hidden');
+  $('auth').classList.remove('hidden');
+  const err = el('p', { class: 'error' });
+  const [lu, uname] = field('Username', { maxlength: 37, autocomplete: 'username', placeholder: 'name (Hearth adds a #number)', value: (p.email.split('@')[0] || '').replace(/[^a-zA-Z0-9_.]/g, '').slice(0, 32) });
+  const [ld, disp] = field('Display name', { maxlength: 32, value: p.name || '' });
+  const [lb, dob] = field('Date of birth', { type: 'date', max: new Date().toISOString().slice(0, 10) });
+  const [lp, pw] = field('Password', { type: 'password', autocomplete: 'new-password', minlength: 12 });
+  const [lp2, pw2] = field('Type the password again', { type: 'password', autocomplete: 'new-password' });
+  const terms = el('input', { type: 'checkbox' });
+  const go = el('button', { class: 'btn primary', type: 'submit' }, 'Create my account');
+  const form = el('form', { class: 'auth-card' },
+    el('div', { class: 'brand' }, el('img', { src: '/icon.svg', alt: '' }), el('span', {}, 'Hearth')),
+    el('h1', {}, 'Finish creating your account'),
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'Signed in with Google as ', el('strong', {}, p.email), '. Your email is already verified.'),
+    lu, ld, lb,
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'Your birth date is used only to confirm your age and can\u2019t be changed later.'),
+    lp, lp2,
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'You\u2019ll mostly sign in with Google. The password confirms important changes and is a backup way in.'),
+    el('label', { class: 'check' }, terms, ' I agree to the ', el('a', { href: '/terms.html', target: '_blank' }, 'Terms'), ' and ', el('a', { href: '/privacy.html', target: '_blank' }, 'Privacy Policy'), '.'),
+    err, go,
+    el('p', { class: 'muted small' }, el('a', { href: '/' }, 'Cancel')));
+  form.onsubmit = async (e) => {
+    e.preventDefault(); err.textContent = '';
+    if (pw.value !== pw2.value) { err.textContent = 'The two passwords don\u2019t match.'; pw2.focus(); return; }
+    go.disabled = true;
+    try {
+      const r = await api('POST', '/auth/google/complete', { username: uname.value.trim(), displayName: disp.value.trim(), birthdate: dob.value, password: pw.value, acceptTerms: terms.checked });
+      S.me = r.user;
+      $('auth').replaceChildren($('auth-form'));
+      start();
+    } catch (x) { err.textContent = x.message; go.disabled = false; }
+  };
+  $('auth-form').classList.add('hidden');
+  $('auth').append(form);
 }
 
 function start() {
@@ -1627,6 +1681,15 @@ async function accountSecurityModal() {
         }
       } }, sec.email ? 'Save new email' : 'Save email')),
       codeRow,
+      sec.googleAvailable || sec.google ? el('div', { class: 'list-row' }, el('div', {},
+        el('strong', {}, 'Sign in with Google: '), sec.google ? `linked${sec.google.email ? ` (${sec.google.email})` : ''}` : 'not linked',
+        el('div', { class: 'muted small' }, sec.google ? 'You can sign in with this Google account instead of typing your password.' : 'Link a Google account to sign in with one tap.')),
+      el('span', { class: 'spacer' }),
+      sec.google ? el('button', { class: 'btn', onclick: async () => {
+        err.textContent = '';
+        if (!pw.value) { pwErr.textContent = 'Enter your password above to unlink Google.'; pw.focus(); return; }
+        try { draw(await api('DELETE', '/users/@me/google', { password: pw.value })); toast('Google unlinked.'); } catch (e) { if (e.status === 403) pwErr.textContent = e.message; else err.textContent = e.message; }
+      } }, 'Unlink') : window.hearthDesktop ? el('span', { class: 'muted small' }, 'Link it from the website') : el('a', { class: 'btn', href: '/api/auth/google/start?mode=link' }, 'Link Google')) : null,
       el('div', { class: 'list-row' }, el('div', {},
         el('strong', {}, 'Backup recovery codes'),
         el('div', { class: 'muted small' }, sec.recoveryCodesLeft === null

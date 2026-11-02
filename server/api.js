@@ -173,7 +173,7 @@ function topicFor(channel) {
 }
 
 // ---------- config & auth ----------
-route('GET', '/api/config', () => ({ iceServers: config.iceServers, openRegistration: config.openRegistration }),
+route('GET', '/api/config', () => ({ iceServers: config.iceServers, openRegistration: config.openRegistration, googleLogin: require('./oauth').enabled() }),
   { public: true });
 
 function meta(req) {
@@ -197,6 +197,110 @@ route('POST', '/api/auth/register', async ({ req, res, body }) => {
   activity.record('user.register', { userId: id, detail: { username: userName(id) } });
   return loginResponse(req, res, body, id, token);
 }, { public: true });
+
+// ---------- Sign in with Google (see oauth.js) ----------
+const oauth = require('./oauth');
+const isHttps = (req) => req.socket.encrypted || config.publicUrl.startsWith('https://');
+function cookieStr(req, name, value, { path = '/', maxAge, sameSite = 'Strict' } = {}) {
+  return `${name}=${encodeURIComponent(value || '')}; Path=${path}; HttpOnly; SameSite=${sameSite}; Max-Age=${value ? maxAge : 0}${isHttps(req) ? '; Secure' : ''}`;
+}
+// Ends the Google round trip with a tiny page that moves on to Hearth. (A
+// plain redirect wouldn't carry the new same-site-only login cookie.)
+function oauthDone(res, cookies, dest, message) {
+  const url = dest.replace(/"/g, '');
+  const page = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="refresh" content="0;url=${url}">`
+    + `<title>Hearth</title><body style="background:#0b0f0c;color:#cfe;font:16px system-ui;padding:24px">${message ? message.replace(/[<>&]/g, '') : 'Signing you in\u2026'} <a style="color:#7f7" href="${url}">Continue</a></body>`;
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Set-Cookie': cookies, 'Referrer-Policy': 'no-referrer',
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'", 'X-Frame-Options': 'DENY' });
+  res.end(page);
+}
+route('GET', '/api/auth/google/start', ({ req, res, query, token }) => {
+  const mode = query.get('mode') === 'link' ? 'link' : 'login';
+  const user = auth.userFromToken(token);
+  if (mode === 'link' && !user) throw new HttpError(401, 'Log in first.');
+  let r;
+  try { r = oauth.start(mode, user && user.id); } catch (e) { return oauthDone(res, [], `/?google=error&m=${encodeURIComponent(e.message)}`, e.message); }
+  // Lax: this cookie must come back when Google sends the browser here.
+  res.writeHead(302, { Location: r.url, 'Cache-Control': 'no-store', 'Set-Cookie': cookieStr(req, 'hearth_oauth', r.cookie, { path: '/api/auth/google', maxAge: 600, sameSite: 'Lax' }) });
+  res.end();
+}, { public: true, raw: true });
+
+route('GET', '/api/auth/google/callback', async ({ req, res, query }) => {
+  const clear = cookieStr(req, 'hearth_oauth', '', { path: '/api/auth/google', sameSite: 'Lax' });
+  const fail = (msg) => oauthDone(res, [clear], `/?google=error&m=${encodeURIComponent(msg)}`, msg);
+  let g;
+  try { g = await oauth.finish(query, cookie(req, 'hearth_oauth')); } catch (e) {
+    if (!(e instanceof oauth.OAuthError)) console.error('[google]', e);
+    return fail(e instanceof oauth.OAuthError ? e.message : 'Couldn\u2019t sign in with Google. Please try again.');
+  }
+  const gEmail = g.email ? secrets.encryptText('email', String(g.email).toLowerCase()) : null;
+  const linked = one('SELECT id, suspended_at, suspended_reason FROM users WHERE google_sub = ?', g.sub);
+  if (g.mode === 'link') {
+    if (!g.uid || !one('SELECT 1 FROM users WHERE id = ?', g.uid)) return fail('Please log in again, then link Google from Profile.');
+    if (linked && linked.id !== g.uid) return fail('That Google account is already linked to a different Hearth account.');
+    run('UPDATE users SET google_sub = ?, google_email_enc = ? WHERE id = ?', g.sub, gEmail, g.uid);
+    return oauthDone(res, [clear], '/?google=linked', 'Google account linked.');
+  }
+  const signIn = (id) => {
+    const u = one('SELECT suspended_at, suspended_reason FROM users WHERE id = ?', id);
+    if (u.suspended_at) return fail(`This account has been suspended${u.suspended_reason ? `: ${u.suspended_reason}` : '.'}`);
+    return oauthDone(res, [clear, cookieStr(req, 'hearth_token', auth.createSession(id, meta(req)), { maxAge: 60 * 60 * 24 * 365 })], '/');
+  };
+  if (linked) return signIn(linked.id);
+  // Same email as an existing account? Link only if both Google and Hearth
+  // have confirmed the person owns that address.
+  if (g.email && g.emailVerified) {
+    let byEmail = null;
+    try { byEmail = one('SELECT id, email_verified_at FROM users WHERE email_hash = ? AND is_system = 0', auth.emailHash(auth.normalizeEmail(g.email))); } catch { /* odd address */ }
+    if (byEmail && byEmail.email_verified_at) {
+      run('UPDATE users SET google_sub = ?, google_email_enc = ? WHERE id = ?', g.sub, gEmail, byEmail.id);
+      return signIn(byEmail.id);
+    }
+    if (byEmail) return fail('A Hearth account already uses this email, but it hasn\u2019t been verified. Log in with your username and password, then link Google in Profile \u2192 Account recovery.');
+  } else {
+    return fail('Your Google account doesn\u2019t have a verified email address, so it can\u2019t be used to sign in here.');
+  }
+  if (!config.openRegistration && one('SELECT 1 FROM users LIMIT 1')) return fail('Registration is closed on this server.');
+  // New person: finish sign-up (username, birth date, terms, password).
+  const pending = crypto.randomBytes(24).toString('base64url');
+  run('DELETE FROM oauth_pending WHERE expires_at < ?', Date.now());
+  run('INSERT INTO oauth_pending (token_hash, sub, email_enc, name, expires_at) VALUES (?, ?, ?, ?, ?)',
+    auth.hashToken(pending), g.sub, secrets.encryptText('email', String(g.email).toLowerCase()), String(g.name || '').slice(0, 64), Date.now() + 15 * 60 * 1000);
+  return oauthDone(res, [clear, cookieStr(req, 'hearth_gsignup', pending, { path: '/api/auth/google', maxAge: 900 })], '/?google=signup', 'Almost done\u2026');
+}, { public: true, raw: true });
+
+function pendingSignup(req) {
+  const t = cookie(req, 'hearth_gsignup');
+  const p = t && one('SELECT * FROM oauth_pending WHERE token_hash = ? AND expires_at > ?', auth.hashToken(t), Date.now());
+  if (!p) throw new HttpError(410, 'That Google sign-up has expired. Tap "Sign in with Google" again.');
+  return p;
+}
+route('GET', '/api/auth/google/pending', ({ req }) => {
+  const p = pendingSignup(req);
+  return { email: secrets.decryptText('email', p.email_enc), name: p.name || '' };
+}, { public: true });
+route('POST', '/api/auth/google/complete', async ({ req, res, body }) => {
+  const p = pendingSignup(req);
+  if (!config.openRegistration && one('SELECT 1 FROM users LIMIT 1')) throw new HttpError(403, 'Registration is closed on this server.');
+  if (one('SELECT 1 FROM users WHERE google_sub = ?', p.sub)) throw new HttpError(409, 'That Google account already has a Hearth account. Sign in with Google instead.');
+  const email = secrets.decryptText('email', p.email_enc);
+  const { id, token } = await auth.register(body.username, body.password, body.displayName || p.name, meta(req), body.acceptTerms, email, body.birthdate,
+    { verifiedEmail: true, googleSub: p.sub });
+  run('UPDATE users SET google_email_enc = ? WHERE id = ?', p.email_enc, id);
+  run('DELETE FROM oauth_pending WHERE token_hash = ?', p.token_hash);
+  activity.record('user.register', { userId: id, detail: { username: userName(id), via: 'google' } });
+  res.setHeader('Set-Cookie', [cookieStr(req, 'hearth_token', token, { maxAge: 60 * 60 * 24 * 365 }), cookieStr(req, 'hearth_gsignup', '', { path: '/api/auth/google' })]);
+  const out = { user: ser.user(one('SELECT * FROM users WHERE id = ?', id)) };
+  if (body.returnToken === true) out.token = token;
+  return out;
+}, { public: true });
+route('DELETE', '/api/users/@me/google', async ({ user, body }) => {
+  const row = one('SELECT password_hash FROM users WHERE id = ?', user.id);
+  const { ok } = await auth.verifyPassword(String(body.password || ''), row.password_hash);
+  if (!ok) { const e = new HttpError(403, 'Your password is incorrect.'); e.extra = { field: 'password' }; throw e; }
+  run('UPDATE users SET google_sub = NULL, google_email_enc = NULL WHERE id = ?', user.id);
+  return auth.accountSecurity(user.id);
+});
 
 route('POST', '/api/auth/login', async ({ req, res, body }) => {
   const { id, token } = await auth.login(body.username, body.password, meta(req));

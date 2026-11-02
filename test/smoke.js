@@ -12,11 +12,16 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const MOCK_PORT = PORT + 1000;
 const mockDiscord = require('./mock-discord');
 const mockReady = mockDiscord.start(MOCK_PORT);
+const GOOGLE_PORT = PORT + 2000;
+const mockGoogle = require('./mock-google');
+const googleReady = mockGoogle.start(GOOGLE_PORT, 'test-client-id', 'test-secret');
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-test-'));
 
 const srv = spawn(process.execPath, ['--no-warnings', path.join(__dirname, '..', 'server', 'index.js')], {
   env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, MAIL_DEV: 'true', RATE_LIMIT_SCALE: '20', ALERT_DELAY_MS: '300',
-    DISCORD_API_BASE: `http://127.0.0.1:${MOCK_PORT}/api`, DISCORD_CDN_BASE: `http://127.0.0.1:${MOCK_PORT}/cdn` },
+    DISCORD_API_BASE: `http://127.0.0.1:${MOCK_PORT}/api`,
+    GOOGLE_CLIENT_ID: 'test-client-id', GOOGLE_CLIENT_SECRET: 'test-secret', PUBLIC_URL: `http://127.0.0.1:${PORT}`,
+    GOOGLE_AUTH_URL: 'https://accounts.google.com/o/oauth2/v2/auth', GOOGLE_TOKEN_URL: `http://127.0.0.1:${GOOGLE_PORT}/token`, GOOGLE_CERTS_URL: `http://127.0.0.1:${GOOGLE_PORT}/certs`, DISCORD_CDN_BASE: `http://127.0.0.1:${MOCK_PORT}/cdn` },
   stdio: ['ignore', 'pipe', 'inherit'],
 });
 
@@ -666,6 +671,86 @@ async function main() {
   assert.ok((await req('GET', '/admin/activity', null, OW)).data.items.some((i) => i.kind === 'user.rename' && i.detail.username === `renamed1#${rn.data.tag}`));
   ok('usernames change once every 30 days with a password; old names are held; reserved names refused');
   ok('names can repeat with a different #number; login and DMs need the number when a name is shared; pick your own number');
+
+  // ---------------- log in with email; sign in with Google ----------------
+  assert.equal((await req('POST', '/auth/login', { username: 'Alice@Test.Example', password: NEWPW })).status, 200);
+  assert.equal((await req('POST', '/auth/login', { username: 'alice@test.example', password: 'wrong password 123' })).status, 401);
+  ok('log in with your email address instead of your username');
+
+  await googleReady;
+  assert.equal((await req('GET', '/config')).data.googleLogin, true);
+  const cookieOf = (res, name) => (res.headers.getSetCookie().find((c) => c.startsWith(name + '=')) || '').split(';')[0];
+  const gStart = async (extra = {}) => {
+    const r = await fetch(BASE + '/api/auth/google/start' + (extra.mode ? `?mode=${extra.mode}` : ''), { redirect: 'manual', headers: extra.headers || {} });
+    assert.equal(r.status, 302);
+    const loc = r.headers.get('location');
+    assert.ok(loc.startsWith('https://accounts.google.com/') && /code_challenge_method=S256/.test(loc) && /scope=openid\+email\+profile/.test(loc));
+    assert.match(r.headers.get('set-cookie'), /hearth_oauth=.*HttpOnly; SameSite=Lax/);
+    return { loc, oauthCookie: cookieOf(r, 'hearth_oauth') };
+  };
+  const gBack = (q, ck) => fetch(BASE + `/api/auth/google/callback?${new URLSearchParams(q)}`, { headers: { Cookie: ck } });
+
+  // A brand-new person: Google -> finish sign-up.
+  let s1 = await gStart();
+  let ap = mockGoogle.approve(s1.loc, { sub: 'g-111', email: 'newbie@gmail.com', email_verified: true, name: 'New Bie' });
+  let back = await gBack({ code: ap.code, state: ap.state }, s1.oauthCookie);
+  assert.match(await back.text(), /url=\/\?google=signup/);
+  const gs = cookieOf(back, 'hearth_gsignup');
+  assert.ok(gs.length > 20);
+  assert.equal((await req('GET', '/auth/google/pending', null, null, { headers: { Cookie: gs } })).data.email, 'newbie@gmail.com');
+  const done1 = await req('POST', '/auth/google/complete', { username: 'newbie', password: 'google person phrase 1', birthdate: '1995-05-05', acceptTerms: true, returnToken: true }, null, { headers: { Cookie: gs, Origin: BASE } });
+  assert.equal(done1.status, 200, JSON.stringify(done1.data));
+  const NB = done1.data.token;
+  const nbSec = (await req('GET', '/users/@me/security', null, NB)).data;
+  assert.equal(nbSec.emailVerified, true); assert.equal(nbSec.google.email, 'newbie@gmail.com');
+  assert.equal((await req('POST', '/auth/google/complete', { username: 'again', password: 'google person phrase 1', birthdate: '1995-05-05', acceptTerms: true }, null, { headers: { Cookie: gs, Origin: BASE } })).status, 410);
+
+  // Same person signs in again later: straight in.
+  s1 = await gStart();
+  ap = mockGoogle.approve(s1.loc, { sub: 'g-111', email: 'newbie@gmail.com', email_verified: true });
+  back = await gBack({ code: ap.code, state: ap.state }, s1.oauthCookie);
+  const sess = cookieOf(back, 'hearth_token');
+  assert.ok(sess.length > 20 && /url=\/"/.test(await back.text()));
+  assert.equal((await fetch(BASE + '/api/users/@me', { headers: { Cookie: sess } }).then((r) => r.json())).username, 'newbie');
+  ok('sign in with Google: new people finish sign-up (email pre-verified), then sign in with one tap');
+
+  // Tampering is refused: wrong state, forged signature, wrong nonce, no cookie.
+  s1 = await gStart();
+  ap = mockGoogle.approve(s1.loc, { sub: 'g-111', email: 'newbie@gmail.com', email_verified: true });
+  assert.match(await (await gBack({ code: ap.code, state: 'x' + ap.state.slice(1) }, s1.oauthCookie)).text(), /google=error/);
+  s1 = await gStart();
+  ap = mockGoogle.approve(s1.loc, { sub: 'g-111', email: 'newbie@gmail.com', email_verified: true }, { forge: true });
+  let bad = await gBack({ code: ap.code, state: ap.state }, s1.oauthCookie);
+  assert.match(await bad.text(), /google=error/); assert.equal(cookieOf(bad, 'hearth_token'), '');
+  s1 = await gStart();
+  ap = mockGoogle.approve(s1.loc, { sub: 'g-111', email: 'newbie@gmail.com', email_verified: true, nonce: 'replayed' });
+  bad = await gBack({ code: ap.code, state: ap.state }, s1.oauthCookie);
+  assert.match(await bad.text(), /google=error/); assert.equal(cookieOf(bad, 'hearth_token'), '');
+  s1 = await gStart();
+  ap = mockGoogle.approve(s1.loc, { sub: 'g-111', email: 'newbie@gmail.com', email_verified: true });
+  assert.match(await (await gBack({ code: ap.code, state: ap.state }, '')).text(), /google=error/);
+  ok('Google sign-in rejects a wrong state, a forged token, a replayed nonce and a missing cookie');
+
+  // Existing account with the same verified email gets linked on first Google sign-in.
+  s1 = await gStart();
+  ap = mockGoogle.approve(s1.loc, { sub: 'g-alice', email: 'alice@test.example', email_verified: true });
+  back = await gBack({ code: ap.code, state: ap.state }, s1.oauthCookie);
+  const aliceSess = cookieOf(back, 'hearth_token');
+  assert.equal((await fetch(BASE + '/api/users/@me', { headers: { Cookie: aliceSess } }).then((r) => r.json())).username, 'alice');
+  // Unverified email on an account: not linked automatically.
+  const UV = (await req('POST', '/auth/register', { acceptTerms: true, username: 'unverif', email: 'unverif@gmail.com', password: 'never verified phrase 4', returnToken: true })).data.token;
+  s1 = await gStart();
+  ap = mockGoogle.approve(s1.loc, { sub: 'g-squat', email: 'unverif@gmail.com', email_verified: true });
+  back = await gBack({ code: ap.code, state: ap.state }, s1.oauthCookie);
+  assert.match(await back.text(), /hasn.t been verified/); assert.equal(cookieOf(back, 'hearth_token'), '');
+  // Link from settings while logged in, then unlink with the password.
+  s1 = await gStart({ mode: 'link', headers: { Authorization: 'Bearer ' + UV } });
+  ap = mockGoogle.approve(s1.loc, { sub: 'g-uv', email: 'other@gmail.com', email_verified: true });
+  assert.match(await (await gBack({ code: ap.code, state: ap.state }, s1.oauthCookie)).text(), /google=linked/);
+  assert.equal((await req('GET', '/users/@me/security', null, UV)).data.google.email, 'other@gmail.com');
+  assert.equal((await req('DELETE', '/users/@me/google', { password: 'nope nope nope 1' }, UV)).status, 403);
+  assert.equal((await req('DELETE', '/users/@me/google', { password: 'never verified phrase 4' }, UV)).data.google, null);
+  ok('Google links to an existing account only when both sides verified the email; link and unlink in settings');
 
   cu.ws.close();
   ca.ws.close(); cb.ws.close();

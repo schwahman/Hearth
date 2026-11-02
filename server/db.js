@@ -410,6 +410,20 @@ CREATE TABLE IF NOT EXISTS username_holds (
 );
 `);
 
+// "Sign in with Google": the Google account's permanent ID (its "sub").
+addColumn('users', 'google_sub', 'TEXT');
+addColumn('users', 'google_email_enc', 'TEXT');  // which Google account is linked (shown in settings)
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google ON users(google_sub) WHERE google_sub IS NOT NULL');
+db.exec(`
+CREATE TABLE IF NOT EXISTS oauth_pending (
+  token_hash TEXT PRIMARY KEY,
+  sub        TEXT NOT NULL,
+  email_enc  TEXT NOT NULL,
+  name       TEXT,
+  expires_at INTEGER NOT NULL
+);
+`);
+
 // Sign-ups, new servers, joins and imports, for the Hearth admin Activity
 // feed and email alerts. Kept 30 days (see activity.js).
 db.exec(`

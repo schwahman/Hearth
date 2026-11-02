@@ -96,6 +96,8 @@ All optional, set as environment variables.
 | `VAULT_DAYS` | `30` | How long encrypted copies of deleted content are kept |
 | `MAIL_DEV` | `false` | Testing only: print emails to the log instead of sending |
 | `GIPHY_API_KEY` | | Turns on GIF search (`/gif` and the GIF button). Free key from developers.giphy.com; see below |
+| `PUBLIC_URL` | | The https:// address people use to reach Hearth (needed for Sign in with Google) |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | | Turns on "Sign in with Google" (see below) |
 | `ALERT_DELAY_MS` | `180000` | How long admin "right away" alerts wait to group activity into one email |
 | `IMPORT_MAX_GB` | `5` | Most file data one Discord import may copy |
 | `IMPORT_MAX_JOBS` | `2` | Discord imports that can run at once |
@@ -112,6 +114,13 @@ MAIL_FROM="Hearth <yourhearth@gmail.com>"
 ```
 
 Gmail allows about 500 emails a day, plenty for testing. Vultr blocks port 25 but not 587, so this works out of the box. For launch, switch to an email service with your own domain so messages come from it and don't land in spam.
+
+**Sign in with Google** (needs a domain name with HTTPS first; Google won't send people back to a bare IP address):
+1. In Google Cloud Console (console.cloud.google.com), create a project, then go to **APIs & Services → OAuth consent screen**. Choose *External*, fill in the app name (Hearth), support email, your domain, and links to `/privacy.html` and `/terms.html`. The only scopes needed are `openid`, `email` and `profile`.
+2. Go to **Credentials → Create credentials → OAuth client ID → Web application**. Add the redirect URI `https://YOUR-DOMAIN/api/auth/google/callback`.
+3. Put the client ID and secret in `/etc/hearth.env` with `PUBLIC_URL=https://YOUR-DOMAIN`, and restart Hearth. A "Sign in with Google" button appears on the login page.
+
+People who sign in with Google for the first time pick a username, enter their birth date and agree to the terms (their email is already verified by Google). If a Hearth account already has the same email and it's verified, Google is linked to that account. The desktop app keeps using username/email and password, because Google blocks its sign-in inside desktop apps; people can link Google on the website.
 
 **GIFs:** create an app at developers.giphy.com, copy its API key into `GIPHY_API_KEY`, and restart. New keys are "beta" keys limited to about 100 searches an hour for the whole site, which is fine for testing; before launching, apply for a production key in GIPHY's dashboard. GIPHY's rules require GIFs and searches to load straight from GIPHY on each device (Hearth can't copy or proxy them) and "Powered by GIPHY" to be shown, which the picker does. (Google shut down the Tenor GIF API in June 2026, so GIPHY is used instead.)
 

@@ -27,6 +27,11 @@ module.exports = {
   // require searches and GIFs to load straight from GIPHY in each person's
   // app, so the key is shared with signed-in clients (that's normal for it).
   giphyKey: process.env.GIPHY_API_KEY || '',
+  // The address people use to reach Hearth, e.g. https://chat.example.com.
+  // Needed for "Sign in with Google" (Google sends people back here).
+  publicUrl: (process.env.PUBLIC_URL || '').replace(/\/$/, ''),
+  googleClientId: process.env.GOOGLE_CLIENT_ID || '',
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
   iceServers: process.env.ICE_SERVERS ? JSON.parse(process.env.ICE_SERVERS) : [],
   // Set to "false" to stop new people signing up (invite-only community).
   openRegistration: process.env.OPEN_REGISTRATION !== 'false',
