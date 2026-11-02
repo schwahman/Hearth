@@ -1651,6 +1651,19 @@ route('GET', '/api/admin/activity', ({ user, query }) => {
     mailError: require('./mailer').lastError(),
     hasVerifiedEmail: !!one('SELECT 1 FROM users WHERE id = ? AND email_verified_at IS NOT NULL', user.id) };
 });
+// Sends a test email to the admin's own address and reports exactly what
+// went wrong, so email settings can be checked without the server console.
+route('POST', '/api/admin/mail-test', async ({ user }) => {
+  requireAdmin(user);
+  const mailer = require('./mailer');
+  if (!mailer.canSend()) return { ok: false, hint: 'Email sending isn\u2019t set up yet: add the SMTP_ settings to /etc/hearth.env and restart Hearth.' };
+  const e = auth.userEmail(user.id);
+  if (!e) return { ok: false, hint: 'Add an email to your account first (Profile \u2192 Account recovery).' };
+  auth.hit(`mailtest:${user.id}`, 10, 3600 * 1000);
+  const sent = await mailer.sendMail({ to: e.email, subject: 'Hearth test email', text: 'If you can read this, Hearth can send email. \u2714\n' });
+  const err = mailer.lastError();
+  return sent ? { ok: true, to: e.email } : { ok: false, to: e.email, error: err && err.message, hint: err && err.hint };
+});
 route('POST', '/api/admin/activity/seen', ({ user }) => { requireAdmin(user); activity.markSeen(user.id); return { unseen: 0 }; });
 route('PUT', '/api/admin/alerts', ({ user, body }) => {
   requireAdmin(user);

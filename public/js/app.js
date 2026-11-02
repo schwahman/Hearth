@@ -3116,6 +3116,15 @@ async function adminActivity() {
       stat(sm.servers, 'servers', `+${sm.newServers.day} today · +${sm.newServers.week} this week`),
       stat(sm.joins.week, 'joins this week', `${sm.joins.day} today`)),
     mailWarn, el('label', {}, 'Email me about new activity', sel), note,
+    el('div', { class: 'row', style: { justifyContent: 'flex-start', margin: 0 } }, el('button', { class: 'btn small', onclick: async (ev) => {
+      const b = ev.currentTarget; b.disabled = true; b.textContent = 'Sending\u2026';
+      try {
+        const r = await api('POST', '/admin/mail-test');
+        if (r.ok) toast(`\u2714 Test email sent to ${r.to}. Check your inbox (and spam).`);
+        else modal([el('h2', {}, 'Email isn\u2019t working yet'), el('p', {}, r.hint || 'Unknown problem.'), r.error ? el('p', { class: 'muted small' }, `Details: ${r.error}`) : null]);
+      } catch (x) { toast(x.message); }
+      b.disabled = false; b.textContent = 'Send test email';
+    } }, 'Send test email')),
     list, more,
     el('p', { class: 'muted small', style: { margin: 0 } }, 'Shows names only, never messages. Kept for 30 days.'));
 }
