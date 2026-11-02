@@ -1753,6 +1753,76 @@ route('POST', '/api/admin/users/:id/admin', ({ user, params, body }) => {
   vault.logAccess(user.id, body.isAdmin ? 'admin.grant' : 'admin.revoke', params.id);
 });
 
+// ---------- desktop app updates ----------
+// The newest desktop installer lives in DATA_DIR/downloads/desktop. Admins
+// upload it from the admin panel; desktop apps check /api/desktop/latest and
+// offer to update, and anyone can download it from /download/desktop/win.
+const desktopDir = path.join(config.dataDir, 'downloads', 'desktop');
+const desktopInfoFile = (platform) => path.join(desktopDir, `${platform}.json`);
+function desktopInfo(platform) {
+  try { return JSON.parse(fs.readFileSync(desktopInfoFile(platform), 'utf8')); } catch { return null; }
+}
+route('GET', '/api/desktop/latest', ({ query }) => {
+  const platform = query.get('platform') === 'win' ? 'win' : 'win';
+  const i = desktopInfo(platform);
+  if (!i) return { version: null };
+  return { version: i.version, size: i.size, sha256: i.sha256, notes: i.notes || '', uploadedAt: i.uploadedAt, url: `/download/desktop/${platform}` };
+}, { public: true });
+
+route('POST', '/api/admin/desktop', async ({ req, user, query }) => {
+  requireAdmin(user);
+  const version = String(query.get('version') || '').trim();
+  if (!/^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(version)) throw new HttpError(400, 'Version must look like 0.2.0.');
+  const notes = String(query.get('notes') || '').slice(0, 500);
+  const declared = Number(req.headers['content-length'] || 0);
+  const MAX = 600 * 1024 * 1024;
+  if (!declared || declared > MAX) throw new HttpError(413, 'The installer must be smaller than 600 MB.');
+  fs.mkdirSync(desktopDir, { recursive: true });
+  const name = `Hearth-Setup-${version}.exe`;
+  const tmp = path.join(desktopDir, `.upload-${crypto.randomBytes(6).toString('hex')}`);
+  const hash = crypto.createHash('sha256');
+  let size = 0; let head = null;
+  await new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(tmp);
+    req.on('data', (c) => {
+      if (!head) head = c.subarray(0, 2);
+      size += c.length; hash.update(c);
+      if (size > MAX) { req.destroy(); out.destroy(); reject(new HttpError(413, 'Too large.')); }
+    });
+    req.on('error', reject);
+    out.on('error', reject);
+    out.on('finish', resolve);
+    req.pipe(out);
+  }).catch((e) => { fs.rmSync(tmp, { force: true }); throw e; });
+  // Windows programs start with "MZ".
+  if (!head || head.toString('latin1') !== 'MZ' || size !== declared) {
+    fs.rmSync(tmp, { force: true });
+    throw new HttpError(400, 'That doesn\u2019t look like a Windows installer (.exe).');
+  }
+  const old = desktopInfo('win');
+  fs.renameSync(tmp, path.join(desktopDir, name));
+  const info = { version, file: name, size, sha256: hash.digest('hex'), notes, uploadedAt: Date.now(), uploadedBy: user.id };
+  fs.writeFileSync(desktopInfoFile('win'), JSON.stringify(info, null, 2));
+  if (old && old.file && old.file !== name) fs.rmSync(path.join(desktopDir, old.file), { force: true });
+  vault.logAccess(user.id, 'desktop.publish', null, `v${version} (${Math.round(size / 1048576)} MB)`);
+  console.log(`[desktop] published installer v${version}`);
+  return { version, size, sha256: info.sha256 };
+}, { raw: true });
+
+function serveDownload(req, res) {
+  const m = /^\/download\/desktop\/(win)\/?$/.exec(new URL(req.url, 'http://x').pathname);
+  if (!m) return false;
+  const i = desktopInfo(m[1]);
+  const file = i && path.join(desktopDir, i.file);
+  if (!file || !fs.existsSync(file)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('No desktop app has been published yet.'); return true; }
+  res.writeHead(200, {
+    'Content-Type': 'application/vnd.microsoft.portable-executable', 'Content-Length': i.size,
+    'Content-Disposition': `attachment; filename="${i.file}"`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-cache',
+  });
+  fs.createReadStream(file).pipe(res);
+  return true;
+}
+
 // ---------- Discord import (see importer.js) ----------
 // The bot token is sent with each wizard step and only kept in memory.
 const importer = require('./importer');
@@ -1775,4 +1845,4 @@ route('POST', '/api/imports/:id/resume', async ({ user, params, body }) => {
 });
 route('POST', '/api/imports/:id/cancel', ({ user, params }) => importer.cancel(user.id, params.id));
 
-module.exports = { handle, serveUpload, channelAccess, state, cookie, sameOrigin };
+module.exports = { handle, serveUpload, serveDownload, channelAccess, state, cookie, sameOrigin };

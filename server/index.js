@@ -54,6 +54,7 @@ async function onRequest(req, res) {
       return res.end('{"error":"Not found."}');
     }
     if (req.url.startsWith('/uploads/') && api.serveUpload(req, res)) return;
+    if (req.url.startsWith('/download/') && api.serveDownload(req, res)) return;
     serveStatic(req, res);
   } catch (err) {
     console.error(err);

@@ -1,7 +1,7 @@
 {
   "name": "hearth-desktop",
   "productName": "Hearth",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Hearth desktop app",
   "author": "JaxxonMurphy Studios",
   "private": true,

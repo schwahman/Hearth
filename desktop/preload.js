@@ -11,4 +11,9 @@ contextBridge.exposeInMainWorld('hearthDesktop', {
   flash: () => ipcRenderer.send('desktop:flash'),
   retry: () => ipcRenderer.send('desktop:retry'),
   changeServer: () => ipcRenderer.send('desktop:change-server'),
+  appVersion: () => ipcRenderer.invoke('desktop:version'),
+  getUpdate: () => ipcRenderer.invoke('desktop:get-update'),
+  installUpdate: () => ipcRenderer.invoke('desktop:install-update'),
+  onUpdateAvailable: (cb) => ipcRenderer.on('desktop:update-available', (_e, info) => cb(info)),
+  onUpdateProgress: (cb) => ipcRenderer.on('desktop:update-progress', (_e, p) => cb(p)),
 });

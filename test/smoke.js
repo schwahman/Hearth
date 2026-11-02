@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+const nodeCrypto = require('node:crypto');
 
 const PORT = 18000 + Math.floor(Math.random() * 1000);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -784,6 +785,30 @@ async function main() {
   await req('DELETE', `/presets/${pre.id}`, null, IM);
   assert.equal((await req('GET', `/servers/${done.serverId}`, null, IM)).data.presets.length, 0);
   ok('servers can save their own access levels to reuse on any channel');
+
+  // ---------------- update notices ----------------
+  const crc = client(IM);
+  const readyD = await crc.wait('READY');
+  assert.match(readyD.build, /^[0-9a-f]{12}$/);
+  crc.ws.close();
+  assert.equal((await req('GET', '/desktop/latest')).data.version, null);
+  const fakeExe = Buffer.concat([Buffer.from('MZ'), nodeCrypto.randomBytes(5000)]);
+  const uploadD = (tok, body, q = 'version=0.2.0&notes=Faster%20startup') => fetch(BASE + `/api/admin/desktop?${q}`, {
+    method: 'POST', headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/octet-stream' }, body });
+  assert.equal((await uploadD(JN, fakeExe)).status, 404);
+  assert.equal((await uploadD(OW, Buffer.from('not a program at all'))).status, 400);
+  assert.equal((await uploadD(OW, fakeExe, 'version=latest')).status, 400);
+  const pub = await (await uploadD(OW, fakeExe)).json();
+  assert.equal(pub.version, '0.2.0');
+  const latestD = (await req('GET', '/desktop/latest')).data;
+  assert.equal(latestD.version, '0.2.0'); assert.equal(latestD.size, fakeExe.length); assert.equal(latestD.notes, 'Faster startup');
+  assert.equal(latestD.sha256, nodeCrypto.createHash('sha256').update(fakeExe).digest('hex'));
+  const dlRes = await fetch(BASE + '/download/desktop/win');
+  assert.equal(dlRes.status, 200); assert.match(dlRes.headers.get('content-disposition'), /Hearth-Setup-0\.2\.0\.exe/);
+  assert.ok(Buffer.from(await dlRes.arrayBuffer()).equals(fakeExe));
+  await uploadD(OW, fakeExe, 'version=0.2.1');
+  assert.ok(!fs.existsSync(path.join(dataDir, 'downloads', 'desktop', 'Hearth-Setup-0.2.0.exe'))); // old one cleaned up
+  ok('open apps learn when Hearth updates; admins publish desktop installers that apps can safely download');
 
   cu.ws.close();
   ca.ws.close(); cb.ws.close();

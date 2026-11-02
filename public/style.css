@@ -613,3 +613,7 @@ code, pre, .msg .time { font-family: var(--mono); }
 .va-level.lv-chat, .va-level.lv-talk { color: var(--accent); }
 .why { margin: 6px 0 2px 12px; display: grid; gap: 3px; font-size: 13px; }
 .why .yes { color: #2e9e57; } .why .no { color: #e5484d; }
+
+/* ---------- update bar ---------- */
+.update-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  max-width: calc(100vw - 24px); padding: 10px 12px 10px 16px; border-radius: var(--radius); background: var(--bg-1); border: 1px solid var(--accent); box-shadow: 0 10px 30px rgba(0,0,0,.5); }

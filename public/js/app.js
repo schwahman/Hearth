@@ -345,6 +345,9 @@ gw.on('READY', async (d) => {
   voice.sessionId = d.sessionId;
   voice.iceServers = d.iceServers;
   S.gifs = d.gifs || null;
+  // The server was updated while this page stayed open: offer a refresh.
+  if (S.build && d.build && S.build !== d.build) showUpdateBar('web');
+  S.build = S.build || d.build;
   $('gif-btn').classList.toggle('hidden', !S.gifs);
   S.servers = new Map(d.servers.map((s) => [s.id, s]));
   S.dms = new Map(d.dms.map((c) => [c.id, c]));
@@ -2257,14 +2260,14 @@ function askReason(title, hint) {
 }
 
 function adminPanel() {
-  const tabs = [['activity', 'Activity'], ['servers', 'Servers'], ['reports', 'Reports'], ['users', 'Users'], ['holds', 'Legal holds'], ['vault', 'Retention vault'], ['log', 'Admin log']];
+  const tabs = [['activity', 'Activity'], ['servers', 'Servers'], ['desktop', 'Desktop app'], ['reports', 'Reports'], ['users', 'Users'], ['holds', 'Legal holds'], ['vault', 'Retention vault'], ['log', 'Admin log']];
   const body = el('div');
   const tabBar = el('div', { class: 'tabs', style: { overflowX: 'auto' } });
   const show = async (key) => {
     tabBar.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.k === key));
     body.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
     ADMIN_LIVE.onActivity = null;
-    try { body.replaceChildren(await ({ activity: adminActivity, servers: adminServers, reports: adminReports, users: adminUsers, holds: adminHolds, vault: adminVault, log: adminLog })[key](show)); }
+    try { body.replaceChildren(await ({ desktop: adminDesktop, activity: adminActivity, servers: adminServers, reports: adminReports, users: adminUsers, holds: adminHolds, vault: adminVault, log: adminLog })[key](show)); }
     catch (e) { body.replaceChildren(el('p', { class: 'error' }, e.message)); }
   };
   for (const [k, l] of tabs) tabBar.append(el('button', { 'data-k': k, onclick: () => show(k) }, l));
@@ -3398,6 +3401,83 @@ function viewAsTab(s) {
     el('div', { class: 'row', style: { justifyContent: 'flex-start', margin: 0, flexWrap: 'wrap' } }, mode, who), roleBoxes, result);
   run();
   return wrap;
+}
+
+
+// ---------------------------------------------------------------- updates
+// Two kinds: the web app (the server was updated; refreshing loads it) and
+// the desktop app itself (a newer installer is on the server).
+function showUpdateBar(kind, info) {
+  let bar = $('update-bar');
+  if (!bar) {
+    bar = el('div', { id: 'update-bar', class: 'update-bar', role: 'status' });
+    document.body.append(bar);
+  }
+  if (kind === 'web') {
+    if (bar.dataset.kind === 'desktop') return; // the desktop update covers it
+    bar.dataset.kind = 'web';
+    bar.replaceChildren(el('span', {}, '✨ Hearth has been updated.'),
+      el('button', { class: 'btn primary small', onclick: () => location.reload() }, 'Refresh'),
+      el('button', { class: 'icon-btn', title: 'Later', onclick: () => bar.remove() }, '✕'));
+    return;
+  }
+  bar.dataset.kind = 'desktop';
+  const progress = el('span', { class: 'muted small' });
+  const go = el('button', { class: 'btn primary small', onclick: async () => {
+    go.disabled = true; go.textContent = 'Downloading…';
+    try {
+      const r = await window.hearthDesktop.installUpdate();
+      if (r && r.error) { progress.textContent = r.error; go.disabled = false; go.textContent = 'Try again'; }
+      else progress.textContent = 'Installing… Hearth will restart.';
+    } catch { progress.textContent = 'Update failed. Try again later.'; go.disabled = false; go.textContent = 'Try again'; }
+  } }, 'Update now');
+  window.hearthDesktop.onUpdateProgress && window.hearthDesktop.onUpdateProgress((p) => { progress.textContent = `${Math.round(p * 100)}%`; });
+  bar.replaceChildren(el('span', {}, `⬆ Desktop app update available: v${info.version}`),
+    info.notes ? el('span', { class: 'muted small', title: info.notes }, info.notes.length > 60 ? info.notes.slice(0, 60) + '…' : info.notes) : null,
+    progress, go, el('button', { class: 'icon-btn', title: 'Later', onclick: () => bar.remove() }, '✕'));
+}
+if (window.hearthDesktop && window.hearthDesktop.onUpdateAvailable) {
+  window.hearthDesktop.onUpdateAvailable((info) => showUpdateBar('desktop', info));
+  window.hearthDesktop.getUpdate().then((info) => { if (info) showUpdateBar('desktop', info); }).catch(() => {});
+}
+
+// Admin: publish a new desktop installer.
+async function adminDesktop() {
+  const cur = await api('GET', '/desktop/latest');
+  const file = el('input', { type: 'file', accept: '.exe' });
+  const ver = el('input', { placeholder: '0.2.0', maxlength: 14 });
+  const notes = el('input', { placeholder: 'What changed (optional)', maxlength: 500 });
+  const status = el('p', { class: 'muted small', style: { margin: 0 } });
+  const bar = el('div', { class: 'wiz-bar', style: { display: 'none' } }, el('div'));
+  file.onchange = () => { const m = /(\d+\.\d+\.\d+)/.exec(file.files[0] ? file.files[0].name : ''); if (m) ver.value = m[1]; };
+  const send = el('button', { class: 'btn primary', onclick: () => {
+    const f = file.files[0];
+    if (!f) { status.textContent = 'Choose the installer (.exe) first.'; return; }
+    if (!/^\d+\.\d+\.\d+$/.test(ver.value.trim())) { status.textContent = 'Enter the version, like 0.2.0.'; return; }
+    send.disabled = true; bar.style.display = 'block'; status.textContent = 'Uploading…';
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/admin/desktop?version=${encodeURIComponent(ver.value.trim())}&notes=${encodeURIComponent(notes.value.trim())}`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) bar.firstChild.style.width = `${Math.round((e.loaded / e.total) * 100)}%`; };
+    xhr.onload = () => {
+      send.disabled = false;
+      let d = {}; try { d = JSON.parse(xhr.responseText); } catch { /* */ }
+      if (xhr.status === 200) { status.textContent = `✔ Published v${d.version}. Desktop apps will offer the update within a few hours (or when they next start).`; }
+      else status.textContent = d.error || 'Upload failed.';
+    };
+    xhr.onerror = () => { send.disabled = false; status.textContent = 'Upload failed.'; };
+    xhr.send(f);
+  } }, 'Publish update');
+  return el('div', { style: { display: 'grid', gap: '10px' } },
+    el('div', { class: 'list-row' }, el('div', {}, el('strong', {}, 'Published: '), cur.version ? `v${cur.version}` : 'none yet',
+      cur.version ? el('div', { class: 'muted small' }, `${Math.round(cur.size / 1048576)} MB · ${fmtTime(cur.uploadedAt)}${cur.notes ? ` · ${cur.notes}` : ''}`) : null),
+    el('span', { class: 'spacer' }), cur.version ? el('a', { class: 'btn', href: '/download/desktop/win', download: '' }, 'Download') : null),
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'Desktop apps check for a newer version when they start and every few hours, then show an "Update now" bar. New people can download the app from ',
+      el('code', {}, `${location.origin}/download/desktop/win`), '.'),
+    el('label', {}, 'Installer (Hearth-Setup-x.y.z.exe)', file),
+    el('label', {}, 'Version', ver), el('label', {}, 'Notes', notes), bar, status,
+    el('div', { class: 'row', style: { justifyContent: 'flex-start', margin: 0 } }, send));
 }
 
 boot();

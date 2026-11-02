@@ -15,6 +15,8 @@ const {
 } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const { spawn } = require('node:child_process');
 
 const configPath = path.join(app.getPath('userData'), 'config.json');
 function readConfig() {
@@ -225,6 +227,65 @@ ipcMain.on('desktop:flash', () => {
 ipcMain.on('desktop:retry', () => { if (mainWindow) mainWindow.loadURL(config.serverUrl); });
 ipcMain.on('desktop:change-server', changeServer);
 
+// ---------- updates ----------
+// The app asks its own Hearth server whether a newer desktop app has been
+// published. If so, the page shows an "Update now" bar; on Windows the new
+// installer is downloaded (only from that server), checked against the size
+// and SHA-256 the server published, then run, and the app restarts.
+let pendingUpdate = null;
+const newer = (a, b) => {
+  const x = String(a).split('.').map(Number); const y = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); }
+  return false;
+};
+async function checkForUpdate() {
+  if (!serverOrigin) return;
+  try {
+    const res = await net.fetch(`${serverOrigin}/api/desktop/latest?platform=win`);
+    if (!res.ok) return;
+    const info = await res.json();
+    if (!info.version || !/^\d+\.\d+\.\d+$/.test(info.version) || !newer(info.version, app.getVersion())) return;
+    pendingUpdate = { version: info.version, notes: String(info.notes || '').slice(0, 300), size: Number(info.size), sha256: String(info.sha256 || '') };
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop:update-available', { version: pendingUpdate.version, notes: pendingUpdate.notes });
+  } catch { /* offline: try again later */ }
+}
+ipcMain.handle('desktop:version', () => app.getVersion());
+ipcMain.handle('desktop:get-update', () => (pendingUpdate ? { version: pendingUpdate.version, notes: pendingUpdate.notes } : null));
+let installing = false;
+ipcMain.handle('desktop:install-update', async () => {
+  if (!pendingUpdate) return { error: 'No update is waiting.' };
+  if (process.platform !== 'win32') { shell.openExternal(`${serverOrigin}/download/desktop/win`); return { ok: true }; }
+  if (installing) return { error: 'Already updating\u2026' };
+  installing = true;
+  const u = pendingUpdate;
+  const file = path.join(app.getPath('temp'), `Hearth-Setup-${u.version}.exe`);
+  try {
+    const res = await net.fetch(`${serverOrigin}/download/desktop/win`);
+    if (!res.ok || !res.body) throw new Error('download failed');
+    const hash = crypto.createHash('sha256');
+    const out = fs.createWriteStream(file);
+    let got = 0; let lastSent = 0;
+    for await (const chunk of res.body) {
+      const b = Buffer.from(chunk);
+      got += b.length; hash.update(b); out.write(b);
+      if (got > u.size + 1024) throw new Error('too large');
+      if (Date.now() - lastSent > 250) { lastSent = Date.now(); if (mainWindow) mainWindow.webContents.send('desktop:update-progress', u.size ? got / u.size : 0); }
+    }
+    await new Promise((r, j) => out.end((e) => (e ? j(e) : r())));
+    const head = Buffer.alloc(2); const fd = fs.openSync(file, 'r'); fs.readSync(fd, head, 0, 2, 0); fs.closeSync(fd);
+    if (got !== u.size || hash.digest('hex') !== u.sha256 || head.toString('latin1') !== 'MZ') throw new Error('check failed');
+  } catch {
+    installing = false;
+    fs.rmSync(file, { force: true });
+    return { error: 'The update couldn\u2019t be downloaded safely. Try again later.' };
+  }
+  // Run the installer on its own and quit so it can replace the app. It
+  // starts Hearth again when it's done.
+  spawn(file, [], { detached: true, stdio: 'ignore' }).unref();
+  setTimeout(() => { quitting = true; app.quit(); }, 500);
+  return { ok: true };
+});
+
 // ---------- start ----------
 app.whenReady().then(() => {
   app.setAppUserModelId('app.hearth.desktop');
@@ -235,6 +296,8 @@ app.whenReady().then(() => {
     // Global hotkeys work even while a game has focus.
     globalShortcut.register('CommandOrControl+Shift+M', () => send('desktop:toggle-mute'));
     globalShortcut.register('CommandOrControl+Shift+D', () => send('desktop:toggle-deafen'));
+    setTimeout(checkForUpdate, 15 * 1000);
+    setInterval(checkForUpdate, 4 * 3600 * 1000);
   }
 });
 
