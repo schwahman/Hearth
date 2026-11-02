@@ -410,6 +410,20 @@ CREATE TABLE IF NOT EXISTS username_holds (
 );
 `);
 
+// Access levels a server makes for itself (e.g. "Stage speaker"), reusable
+// on any channel for any role or person.
+db.exec(`
+CREATE TABLE IF NOT EXISTS access_presets (
+  id         TEXT PRIMARY KEY,
+  server_id  TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('text','voice')),
+  allow      INTEGER NOT NULL DEFAULT 0,
+  deny       INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+`);
+
 // "Sign in with Google": the Google account's permanent ID (its "sub").
 addColumn('users', 'google_sub', 'TEXT');
 addColumn('users', 'google_email_enc', 'TEXT');  // which Google account is linked (shown in settings)

@@ -68,14 +68,16 @@
         <li><em>21+ only</em>: for alcohol, cannabis or gambling content where the law requires it.</li>
       </ul>
     </li>
-    <li><strong>Private channel:</strong> tick it and only roles you allow (plus the owner and Administrators) can see the channel. Everyone else won't even know it exists.</li>
-    <li><strong>Permissions per role</strong> (like Discord): pick a role on the left (or <em>+ Add a role</em>), then set each permission to <strong>✓ Allow</strong>, <strong>✕ Deny</strong>, or <strong>/</strong> (use what the role normally has).
+    <li><strong>Who can use this channel:</strong> every role (or specific person) gets one <em>access level</em>:
       <ul>
-        <li><em>Read-only channel</em> (#rules, #announcements): @everyone → Send messages ✕; your Mods role → Send messages ✓.</li>
-        <li><em>Staff-only channel</em>: tick Private channel, then Staff role → View channel ✓.</li>
-        <li>How it adds up: a Deny on @everyone is overridden by an Allow on any role the person has. Owners and Administrators always get in.</li>
+        <li>Text channels: <em>Default</em> (whatever their roles allow), <em>Hidden</em>, <em>Read only</em>, <em>Chat</em>, <em>Moderate</em> (chat + delete others' messages), <em>Manage</em> (moderate + edit the channel).</li>
+        <li>Voice channels: <em>Default</em>, <em>Hidden</em>, <em>Listen only</em>, <em>Talk</em>, <em>Manage</em>.</li>
+        <li>A line at the top sums it up, like "Everyone: Read only · Mods: Moderate".</li>
       </ul>
     </li>
+    <li><strong>Private:</strong> one tick hides the channel from everyone except the roles and people you add.</li>
+    <li><strong>Custom:</strong> pick <em>Custom…</em> for any role or person to set each permission to <em>Block</em>, <em>Default</em> or <em>Allow</em>. Made a combination you'll use again? Tap <em>Save as an access level</em>, name it (say "Announcer"), and pick it on any channel.</li>
+    <li><strong>How it adds up:</strong> someone with several roles gets the most generous setting among them, and a setting for a specific person beats their roles. Owners and Administrators always have full access.</li>
     <li><strong>Delete:</strong> the channel's ⚙ → <em>Delete</em>. You'll type its name to confirm. Messages disappear for everyone right away (see <a href="#ownership">section 9</a> for how deletion works).</li>
   </ul>
 
@@ -88,6 +90,13 @@
     <li>You can't give a role a permission you don't have yourself.</li>
     <li>A role's <strong>color</strong> colors its members' names (the highest colored role wins).</li>
     <li><strong>Assign roles:</strong> ⚙ → <em>Members</em>, then tap the role chips next to a person. Highlighted means they have it.</li>
+  </ul>
+  <h3>Quick setup</h3>
+  <ul>
+    <li><strong>Start from a template</strong> when editing a role: <em>Name color only</em>, <em>Guest</em>, <em>Member</em>, <em>Moderator</em>, <em>Manager</em> or <em>Admin</em>. Then adjust anything you like.</li>
+    <li><strong>Groups:</strong> permissions are grouped (Chat, Voice, Invites, Moderation, Management, Administrator). Tick a group's box to switch the whole group on or off, or set each one on its own.</li>
+    <li>A sentence under the templates says what the role can do in plain words, and powerful permissions show a warning. Giving Administrator asks you to confirm.</li>
+    <li><strong>View as</strong> (⚙ → View as, or <em>Check access</em> on a member): see the server exactly as a person, or anyone with certain roles, would. Tap a channel to see <em>why</em> they can or can't see or post there.</li>
   </ul>
   <h3>Every permission</h3>
   <table>

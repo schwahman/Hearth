@@ -49,6 +49,48 @@ const PERM_LABELS = {
   SEND_MESSAGES: 'Send messages', ATTACH_FILES: 'Attach files', ADD_REACTIONS: 'Add reactions',
   CONNECT: 'Join voice', SPEAK: 'Speak in voice', VIDEO: 'Camera & screen share',
 };
+// Server-wide permissions, grouped so a whole area is one click (and each
+// one can still be set on its own).
+const PERM_GROUPS = [
+  { label: 'Chat', desc: 'see channels, talk and share', items: [['VIEW_CHANNELS', 'See channels'], ['SEND_MESSAGES', 'Send messages'], ['ATTACH_FILES', 'Attach files and GIFs'], ['ADD_REACTIONS', 'Add reactions']] },
+  { label: 'Voice', desc: 'calls, video and screen share', items: [['CONNECT', 'Join voice'], ['SPEAK', 'Speak'], ['VIDEO', 'Camera and screen share']] },
+  { label: 'Invites', desc: 'bring people in', items: [['CREATE_INVITE', 'Create invites']] },
+  { label: 'Moderation', desc: 'keep things friendly', items: [['MANAGE_MESSAGES', 'Delete others’ messages'], ['MODERATE_MEMBERS', 'Time out and handle reports'], ['KICK_MEMBERS', 'Kick'], ['BAN_MEMBERS', 'Ban'], ['VIEW_AUDIT_LOG', 'See the audit log']] },
+  { label: 'Management', desc: 'set the server up', items: [['MANAGE_CHANNELS', 'Create and edit channels'], ['MANAGE_ROLES', 'Create, edit and give roles', 'Only roles below their own'], ['MANAGE_SERVER', 'Server name, icon and age setting']] },
+  { label: 'Administrator', desc: 'everything, no limits', danger: true, items: [['ADMINISTRATOR', 'Administrator', 'Bypasses every other setting']] },
+];
+const RISKY = [
+  [P.ADMINISTRATOR, 'Administrator can do everything.'], [P.BAN_MEMBERS, 'Ban removes people for good.'],
+  [P.MANAGE_ROLES, 'Manage roles lets them give out the permissions they have.'], [P.MANAGE_SERVER, 'Manage server changes the server’s name, icon and age setting.'],
+];
+const _CHAT = P.VIEW_CHANNELS | P.SEND_MESSAGES | P.ATTACH_FILES | P.ADD_REACTIONS;
+const _VOICE = P.CONNECT | P.SPEAK | P.VIDEO;
+const ROLE_TEMPLATES = [
+  { name: 'Name color only', desc: 'Adds no permissions; just a color and a label (e.g. VIP)', perms: 0 },
+  { name: 'Guest', desc: 'Read, react and listen in voice', perms: P.VIEW_CHANNELS | P.ADD_REACTIONS | P.CONNECT },
+  { name: 'Member', desc: 'Chat, voice and invites', perms: _CHAT | _VOICE | P.CREATE_INVITE },
+  { name: 'Moderator', desc: 'Member, plus delete messages, time out, kick and see the audit log', perms: _CHAT | _VOICE | P.CREATE_INVITE | P.MANAGE_MESSAGES | P.MODERATE_MEMBERS | P.KICK_MEMBERS | P.VIEW_AUDIT_LOG },
+  { name: 'Manager', desc: 'Moderator, plus ban, channels and roles', perms: _CHAT | _VOICE | P.CREATE_INVITE | P.MANAGE_MESSAGES | P.MODERATE_MEMBERS | P.KICK_MEMBERS | P.VIEW_AUDIT_LOG | P.BAN_MEMBERS | P.MANAGE_CHANNELS | P.MANAGE_ROLES },
+  { name: 'Admin', desc: 'Everything', perms: P.ADMINISTRATOR },
+];
+// A role's permissions as a sentence.
+function roleSentence(perms, isEveryone) {
+  const who = isEveryone ? 'Everyone' : 'People with this role';
+  if (perms & P.ADMINISTRATOR) return `${who} can do everything (Administrator).`;
+  if (!perms) return isEveryone ? 'Everyone can’t do anything until a role allows it.' : `${who} get no extra permissions (just the name and color).`;
+  const parts = [];
+  const pick = (list) => list.filter(([b]) => perms & b).map(([, t]) => t);
+  const chat = pick([[P.VIEW_CHANNELS, 'see channels'], [P.SEND_MESSAGES, 'post'], [P.ATTACH_FILES, 'attach files'], [P.ADD_REACTIONS, 'react']]);
+  if (chat.length) parts.push(chat.join(', '));
+  const voice = pick([[P.CONNECT, 'join voice'], [P.SPEAK, 'speak'], [P.VIDEO, 'use camera and screen share']]);
+  if (voice.length) parts.push(voice.join(', '));
+  if (perms & P.CREATE_INVITE) parts.push('invite people');
+  const mod = pick([[P.MANAGE_MESSAGES, 'delete messages'], [P.MODERATE_MEMBERS, 'time people out and handle reports'], [P.KICK_MEMBERS, 'kick'], [P.BAN_MEMBERS, 'ban'], [P.VIEW_AUDIT_LOG, 'read the audit log']]);
+  if (mod.length) parts.push(`moderate (${mod.join(', ')})`);
+  const mgmt = pick([[P.MANAGE_CHANNELS, 'channels'], [P.MANAGE_ROLES, 'roles below their own'], [P.MANAGE_SERVER, 'server settings']]);
+  if (mgmt.length) parts.push(`manage ${mgmt.join(', ')}`);
+  return `${who} ${isEveryone ? 'can' : 'can also'} ${parts.join('; ')}.`;
+}
 const QUICK_EMOJI = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '👀', '✅', '❌', '💯', '🙏'];
 
 // ---------------------------------------------------------------- state
@@ -1345,6 +1387,7 @@ function memberModal(s, m) {
       } }, 'Message'),
       self ? null : el('button', { class: 'btn', onclick: () => { dlg.close(); toggleBlock(m.user); } }, S.blocked.has(m.user.id) ? 'Unblock' : 'Block'),
       self ? null : el('button', { class: 'btn', onclick: () => { dlg.close(); reportModal({ targetType: 'user', targetId: m.user.id, serverId: s.id, label: m.user.displayName }); } }, 'Report'),
+      can(P.MANAGE_ROLES, s) || can(P.MANAGE_CHANNELS, s) ? el('button', { class: 'btn', title: 'See what they can access, and why', onclick: () => { dlg.close(); VIEW_AS.userId = m.user.id; serverSettingsModal(s, 'viewas'); } }, 'Check access') : null,
       el('button', { class: 'btn', onclick: () => dlg.close() }, 'Close')),
   ]);
 }
@@ -1849,6 +1892,7 @@ function serverSettingsModal(s, start = 'overview') {
   const tabs = [['overview', 'Overview', true], ['invite', 'Invite', can(P.CREATE_INVITE, s)],
     ['roles', 'Roles', can(P.MANAGE_ROLES, s)], ['members', 'Members', true],
     ['reports', 'Reports', can(P.MODERATE_MEMBERS, s)], ['bans', 'Bans', can(P.BAN_MEMBERS, s)],
+    ['viewas', 'View as', can(P.MANAGE_ROLES, s) || can(P.MANAGE_CHANNELS, s)],
     ['audit', 'Audit log', can(P.VIEW_AUDIT_LOG, s)]].filter((t) => t[2]);
   const body = el('div');
   const tabBar = el('div', { class: 'tabs', style: { overflowX: 'auto' } });
@@ -1858,7 +1902,7 @@ function serverSettingsModal(s, start = 'overview') {
     const s2 = S.servers.get(s.id) || s;
     const view = {
       overview: () => overviewTab(s2, dlg), invite: () => inviteBlock(s2), roles: () => rolesTab(s2),
-      members: () => membersTab(s2), reports: () => reportsTab(s2), bans: () => bansTab(s2), audit: () => auditTab(s2),
+      members: () => membersTab(s2), reports: () => reportsTab(s2), bans: () => bansTab(s2), audit: () => auditTab(s2), viewas: () => viewAsTab(s2),
     }[key];
     try { body.replaceChildren(await view()); } catch (e) { body.replaceChildren(el('p', { class: 'error' }, e.message)); }
   };
@@ -1917,15 +1961,42 @@ function rolesTab(s) {
   const edit = (r) => {
     const [lblName, name] = field('Role name', { value: r.name, maxlength: 32, disabled: r.isDefault });
     const color = el('input', { type: 'color', value: r.color || '#39d98a', style: { width: '64px', padding: '2px' } });
-    const boxes = Object.keys(PERM_LABELS).map((k) => {
-      const cb = el('input', { type: 'checkbox' });
-      cb.checked = (r.permissions & P[k]) === P[k];
-      cb.dataset.k = k;
-      return el('label', {}, cb, PERM_LABELS[k]);
-    });
+    let perms = r.permissions | 0;
+    const startPerms = perms;
+    const summary = el('p', { class: 'acc-summary' });
+    const warn = el('div');
+    const groupsBox = el('div', { class: 'perm-groups' });
+    const tplRow = el('div', { class: 'tpl-row' });
+    const drawPerms = () => {
+      summary.textContent = roleSentence(perms, r.isDefault);
+      const risky = RISKY.filter(([bit]) => perms & bit && !(perms & P.ADMINISTRATOR && bit !== P.ADMINISTRATOR));
+      warn.replaceChildren(...(risky.length ? [el('div', { class: 'wiz-box warn' }, el('strong', {}, '⚠ Powerful permissions: '), risky.map(([, t]) => t).join(' '))] : []));
+      tplRow.querySelectorAll('button').forEach((b) => b.classList.toggle('active', Number(b.dataset.p) === perms));
+      groupsBox.replaceChildren(...PERM_GROUPS.map((g) => {
+        const bits = g.items.reduce((a, [k]) => a | P[k], 0);
+        const on = g.items.filter(([k]) => perms & P[k]).length;
+        const all = el('input', { type: 'checkbox' });
+        all.checked = on === g.items.length; all.indeterminate = on > 0 && on < g.items.length;
+        all.onchange = () => { perms = all.checked ? perms | bits : perms & ~bits; drawPerms(); };
+        return el('fieldset', { class: 'perm-group' + (g.danger ? ' danger' : '') },
+          el('legend', {}, el('label', { class: 'check' }, all, el('strong', {}, g.label)), el('span', { class: 'muted small' }, ` ${g.desc}`)),
+          el('div', { class: 'perm-grid' }, g.items.map(([k, label, hint]) => {
+            const cb = el('input', { type: 'checkbox' });
+            cb.checked = !!(perms & P[k]);
+            cb.onchange = () => { perms = cb.checked ? perms | P[k] : perms & ~P[k]; drawPerms(); };
+            return el('label', { title: hint || '' }, cb, label);
+          })));
+      }));
+    };
+    tplRow.replaceChildren(el('span', { class: 'muted small' }, 'Start from:'), ...ROLE_TEMPLATES.map((t) => el('button', {
+      type: 'button', class: 'btn small', 'data-p': String(t.perms), title: t.desc, onclick: () => { perms = t.perms; drawPerms(); },
+    }, t.name)));
     const err = el('p', { class: 'error' });
+    drawPerms();
     editor.replaceChildren(el('div', { style: { display: 'grid', gap: '10px', borderTop: '1px solid var(--line)', paddingTop: '12px' } },
-      lblName, el('label', {}, 'Color ', color), el('div', { class: 'perm-grid' }, boxes), err,
+      r.isDefault ? el('p', { class: 'muted small', style: { margin: 0 } }, 'Everyone is the base role every member has. Other roles add to it.') : lblName,
+      r.isDefault ? null : el('label', {}, 'Color ', color),
+      tplRow, summary, warn, groupsBox, err,
       el('div', { class: 'row' },
         r.isDefault ? null : el('button', { class: 'btn danger', style: { marginRight: 'auto' }, onclick: async () => {
           if (!(await confirmDialog('Delete role', `Delete the ${r.name} role? Members lose it immediately.`, 'Delete role'))) return;
@@ -1933,8 +2004,8 @@ function rolesTab(s) {
           catch (e) { err.textContent = e.message; }
         } }, 'Delete role'),
         el('button', { class: 'btn primary', onclick: async () => {
-          let perms = 0;
-          editor.querySelectorAll('input[type=checkbox]').forEach((cb) => { if (cb.checked) perms |= P[cb.dataset.k]; });
+          if (perms & P.ADMINISTRATOR && !(startPerms & P.ADMINISTRATOR)
+            && !(await confirmDialog(`Make ${r.isDefault ? 'everyone' : r.name} an Administrator?`, 'Administrators can do everything, including deleting channels, banning people and changing every role below them. Only give this to people you fully trust.', 'Give Administrator'))) return;
           try {
             const updated = await api('PATCH', `/roles/${r.id}`, { name: name.value, color: color.value, permissions: perms });
             Object.assign(r, updated); draw(); toast('Role saved');
@@ -2602,103 +2673,181 @@ function categoryModal(s, existing) {
 }
 
 
-// ---------------------------------------------------------------- channel permissions
-// Discord-style per-channel overrides: for each role, every permission is
-// Allow (✓), Deny (✕) or "use the role's normal setting" (/).
+// ---------------------------------------------------------------- channel access
+// Each role or person gets one access level per channel (Hidden, Read only,
+// Chat...). "Custom" opens every single permission, and a server can save
+// its own levels to reuse. Underneath it's still exact per-permission
+// allow/block rules, checked by the server on every action.
 const CHANNEL_PERMS = {
-  text: [[P.VIEW_CHANNELS, 'View channel', 'See the channel and read its messages'], [P.SEND_MESSAGES, 'Send messages'],
-    [P.ATTACH_FILES, 'Attach files'], [P.ADD_REACTIONS, 'Add reactions'], [P.MANAGE_MESSAGES, 'Manage messages', 'Delete other people’s messages'],
-    [P.MANAGE_CHANNELS, 'Manage channel'], [P.CREATE_INVITE, 'Create invite']],
-  voice: [[P.VIEW_CHANNELS, 'View channel'], [P.CONNECT, 'Connect'], [P.SPEAK, 'Speak'], [P.VIDEO, 'Video & screen share'],
-    [P.MANAGE_CHANNELS, 'Manage channel'], [P.CREATE_INVITE, 'Create invite']],
+  text: [[P.VIEW_CHANNELS, 'See the channel', 'See it in the list and read messages'], [P.SEND_MESSAGES, 'Send messages'],
+    [P.ATTACH_FILES, 'Attach files and GIFs'], [P.ADD_REACTIONS, 'Add reactions'], [P.MANAGE_MESSAGES, 'Delete others’ messages'],
+    [P.MANAGE_CHANNELS, 'Edit this channel'], [P.CREATE_INVITE, 'Create invites']],
+  voice: [[P.VIEW_CHANNELS, 'See the channel'], [P.CONNECT, 'Join'], [P.SPEAK, 'Speak'], [P.VIDEO, 'Camera and screen share'],
+    [P.MANAGE_CHANNELS, 'Edit this channel'], [P.CREATE_INVITE, 'Create invites']],
 };
+const TEXT_CHAT = P.VIEW_CHANNELS | P.SEND_MESSAGES | P.ATTACH_FILES | P.ADD_REACTIONS;
+const VOICE_TALK = P.VIEW_CHANNELS | P.CONNECT | P.SPEAK | P.VIDEO;
+function accessLevels(type, s) {
+  const voice = type === 'voice';
+  const builtIn = voice ? [
+    { key: 'default', label: 'Default', desc: 'Whatever their roles allow server-wide', allow: 0, deny: 0 },
+    { key: 'hidden', label: 'Hidden', desc: 'Can’t see or join it', allow: 0, deny: P.VIEW_CHANNELS | P.CONNECT },
+    { key: 'listen', label: 'Listen only', desc: 'Can join and listen, not talk or share', allow: P.VIEW_CHANNELS | P.CONNECT, deny: P.SPEAK | P.VIDEO },
+    { key: 'talk', label: 'Talk', desc: 'Join, talk, camera and screen share', allow: VOICE_TALK, deny: 0 },
+    { key: 'manage', label: 'Manage', desc: 'Talk, plus edit this channel', allow: VOICE_TALK | P.MANAGE_CHANNELS, deny: 0 },
+  ] : [
+    { key: 'default', label: 'Default', desc: 'Whatever their roles allow server-wide', allow: 0, deny: 0 },
+    { key: 'hidden', label: 'Hidden', desc: 'Can’t see it at all', allow: 0, deny: P.VIEW_CHANNELS },
+    { key: 'read', label: 'Read only', desc: 'Can read, can’t post, react or attach', allow: P.VIEW_CHANNELS, deny: P.SEND_MESSAGES | P.ATTACH_FILES | P.ADD_REACTIONS },
+    { key: 'chat', label: 'Chat', desc: 'Read, post, react and attach files', allow: TEXT_CHAT, deny: 0 },
+    { key: 'moderate', label: 'Moderate', desc: 'Chat, plus delete others’ messages', allow: TEXT_CHAT | P.MANAGE_MESSAGES, deny: 0 },
+    { key: 'manage', label: 'Manage', desc: 'Moderate, plus edit this channel', allow: TEXT_CHAT | P.MANAGE_MESSAGES | P.MANAGE_CHANNELS, deny: 0 },
+  ];
+  const saved = ((s && s.presets) || []).filter((p) => p.kind === (voice ? 'voice' : 'text'))
+    .map((p) => ({ key: 'preset:' + p.id, label: p.name, desc: 'Saved access level', allow: p.allow, deny: p.deny, saved: true }));
+  return [...builtIn, ...saved];
+}
+const levelOf = (levels, o) => levels.find((l) => l.allow === (o.allow | 0) && l.deny === (o.deny | 0)) || null;
 
 function overrideEditor(s, type, existing) {
+  const voice = type === 'voice';
+  const levels = accessLevels(type, s);
   const everyone = s.roles.find((r) => r.isDefault);
   const original = new Map();
-  for (const o of (existing && existing.overrides) || []) if (o.type === 'role') original.set(o.id, { allow: o.allow, deny: o.deny });
+  for (const o of (existing && existing.overrides) || []) original.set(`${o.type}:${o.id}`, { allow: o.allow, deny: o.deny });
   const model = new Map([...original].map(([k, v]) => [k, { ...v }]));
-  const get = (id) => model.get(id) || { allow: 0, deny: 0 };
+  if (!model.has(`role:${everyone.id}`)) model.set(`role:${everyone.id}`, { allow: 0, deny: 0 });
+  const custom = new Set([...model].filter(([, o]) => !levelOf(levels, o)).map(([k]) => k));
+  const get = (k) => model.get(k) || { allow: 0, deny: 0 };
   const top = myTop(s);
-  const editable = (r) => r.isDefault || r.position < top;
-  let selected = everyone.id;
-
-  const isPrivate = el('input', { type: 'checkbox' });
-  const sync = () => { isPrivate.checked = !!(get(everyone.id).deny & P.VIEW_CHANNELS); };
-  isPrivate.onchange = () => {
-    const o = { ...get(everyone.id) };
-    if (isPrivate.checked) { o.deny |= P.VIEW_CHANNELS; o.allow &= ~P.VIEW_CHANNELS; } else o.deny &= ~P.VIEW_CHANNELS;
-    model.set(everyone.id, o);
-    if (selected === everyone.id) draw();
+  const targetOf = (k) => {
+    const [t, id] = k.split(':');
+    if (t === 'role') { const r = s.roles.find((x) => x.id === id); return r && { kind: 'role', id, name: r.isDefault ? 'Everyone' : r.name, color: r.color, editable: r.isDefault || r.position < top, position: r.isDefault ? -1 : r.position }; }
+    const m = s.members.find((x) => x.user.id === id);
+    return { kind: 'member', id, name: m ? `${m.nickname || m.user.displayName} (@${handleOf(m.user)})` : 'Former member', editable: true, position: -2 };
   };
-  const roleList = el('div', { class: 'ov-roles' });
-  const grid = el('div', { class: 'ov-grid' });
-  const adder = el('select', { class: 'ov-add' });
-  adder.onchange = () => { if (adder.value) { model.set(adder.value, get(adder.value)); selected = adder.value; draw(); } };
+  const list = el('div', { class: 'acc-list' });
+  const summary = el('p', { class: 'acc-summary' });
+  const isPrivate = el('input', { type: 'checkbox' });
+  const adder = el('select', { class: 'acc-add' });
+
+  function sentence() {
+    const parts = [...model.keys()].map((k) => [k, targetOf(k)]).filter(([, t]) => t)
+      .sort((a, b) => (a[1].id === everyone.id ? -1 : b[1].id === everyone.id ? 1 : a[1].kind === b[1].kind ? (b[1].position - a[1].position) : a[1].kind === 'role' ? -1 : 1))
+      .map(([k, t]) => {
+        const o = get(k); const l = levelOf(levels, o);
+        if (t.id === everyone.id && l && l.key === 'default') return null;
+        return `${t.name}: ${l ? l.label : 'Custom'}`;
+      }).filter(Boolean);
+    summary.textContent = parts.length ? parts.join(' · ') : 'Everyone uses their normal role permissions here.';
+    const eo = get(`role:${everyone.id}`);
+    isPrivate.checked = !!(eo.deny & P.VIEW_CHANNELS);
+  }
+  isPrivate.onchange = () => {
+    const k = `role:${everyone.id}`;
+    model.set(k, isPrivate.checked ? { ...levels.find((l) => l.key === 'hidden') } : { allow: 0, deny: 0 });
+    custom.delete(k); draw();
+  };
+
+  function row(k) {
+    const t = targetOf(k);
+    if (!t) return null;
+    const o = get(k);
+    const lv = levelOf(levels, o);
+    const showCustom = custom.has(k) || !lv;
+    const sel = el('select', { class: 'acc-level', disabled: !t.editable, 'aria-label': `Access for ${t.name}` },
+      levels.filter((l) => !l.saved).map((l) => el('option', { value: l.key, selected: !showCustom && lv && lv.key === l.key }, l.label)),
+      levels.some((l) => l.saved) ? el('optgroup', { label: 'Saved levels' }, levels.filter((l) => l.saved).map((l) => el('option', { value: l.key, selected: !showCustom && lv && lv.key === l.key }, l.label))) : null,
+      el('option', { value: 'custom', selected: showCustom }, 'Custom…'));
+    sel.onchange = () => {
+      if (sel.value === 'custom') { custom.add(k); } else {
+        const l = levels.find((x) => x.key === sel.value);
+        model.set(k, { allow: l.allow, deny: l.deny }); custom.delete(k);
+      }
+      draw();
+    };
+    const desc = showCustom ? 'Pick exactly what’s allowed below.' : lv.desc;
+    const remove = t.id !== everyone.id && t.editable ? el('button', { type: 'button', class: 'icon-btn', title: `Remove ${t.name}`, onclick: () => { model.set(k, { allow: 0, deny: 0 }); if (!original.has(k)) model.delete(k); custom.delete(k); draw(); } }, '✕') : null;
+    const head = el('div', { class: 'acc-row' },
+      el('div', { class: 'acc-who' }, el('span', { class: 'acc-kind' }, t.kind === 'member' ? '\u{1F464}' : '◆'),
+        el('div', {}, el('strong', { style: { color: t.color || '' } }, t.name), el('div', { class: 'muted small' }, t.editable ? desc : 'Above your highest role')))
+      , sel, remove);
+    if (!showCustom) return head;
+    // Custom: every permission, each Block / Default / Allow.
+    const grid = el('div', { class: 'acc-custom' }, CHANNEL_PERMS[voice ? 'voice' : 'text'].map(([bit, label, hint]) => {
+      const state = o.deny & bit ? 'deny' : o.allow & bit ? 'allow' : 'inherit';
+      const set = (st) => {
+        const n = { allow: o.allow & ~bit, deny: o.deny & ~bit };
+        if (st === 'allow') n.allow |= bit; if (st === 'deny') n.deny |= bit;
+        model.set(k, n); draw();
+      };
+      const b = (st, txt, title) => el('button', { type: 'button', class: `ov-btn ${st}` + (state === st ? ' on' : ''), title, disabled: !t.editable, onclick: () => set(st) }, txt);
+      return el('div', { class: 'ov-row' }, el('div', {}, label, hint ? el('div', { class: 'muted small' }, hint) : null),
+        el('div', { class: 'ov-tri' }, b('deny', 'Block', 'Block this here, even if their roles allow it'), b('inherit', 'Default', 'Use what their roles allow server-wide'), b('allow', 'Allow', 'Allow this here, even if their roles don’t')));
+    }),
+    can(P.MANAGE_ROLES, s) ? el('div', { class: 'row', style: { justifyContent: 'flex-start', margin: '6px 0 0' } },
+      el('button', { type: 'button', class: 'btn small', onclick: async () => {
+        const name = await askReason('Save as an access level', 'Name it, e.g. "Stage speaker" or "Announcer"');
+        if (!name) return;
+        try {
+          const p = await api('POST', `/servers/${s.id}/presets`, { name, kind: voice ? 'voice' : 'text', allow: get(k).allow, deny: get(k).deny });
+          s.presets = [...(s.presets || []), p];
+          levels.push({ key: 'preset:' + p.id, label: p.name, desc: 'Saved access level', allow: p.allow, deny: p.deny, saved: true });
+          custom.delete(k); draw(); toast(`Saved "${p.name}". You can pick it on any ${voice ? 'voice' : 'text'} channel.`);
+        } catch (e) { toast(e.message); }
+      } }, 'Save as an access level')) : null);
+    return el('div', { class: 'acc-block' }, head, grid);
+  }
 
   function draw() {
-    sync();
-    const shown = s.roles.filter((r) => r.isDefault || model.has(r.id)).sort((a, b) => (a.isDefault ? 1 : b.isDefault ? -1 : b.position - a.position));
-    shown.unshift(...shown.splice(shown.indexOf(everyone), 1));
-    roleList.replaceChildren(...shown.map((r) => el('button', {
-      class: 'ov-role' + (r.id === selected ? ' active' : ''), type: 'button', onclick: () => { selected = r.id; draw(); },
-      style: { color: r.color || '' },
-    }, r.name, get(r.id).allow || get(r.id).deny ? el('span', { class: 'ov-dot' }) : null)));
-    const rest = s.roles.filter((r) => !r.isDefault && !model.has(r.id)).sort((a, b) => b.position - a.position);
-    adder.replaceChildren(el('option', { value: '' }, rest.length ? '+ Add a role…' : 'All roles added'), ...rest.map((r) => el('option', { value: r.id }, r.name)));
-    adder.disabled = !rest.length;
-    const role = s.roles.find((r) => r.id === selected) || everyone;
-    const can = editable(role);
-    const o = get(role.id);
-    grid.replaceChildren(
-      el('div', { class: 'ov-head' }, el('span', {}, role.isDefault ? 'Everyone (@everyone)' : role.name),
-        can ? null : el('span', { class: 'muted small' }, 'Above your highest role: view only')),
-      ...CHANNEL_PERMS[type === 'voice' ? 'voice' : 'text'].map(([bit, label, hint]) => {
-        const state = o.deny & bit ? 'deny' : o.allow & bit ? 'allow' : 'inherit';
-        const set = (st) => {
-          const n = { allow: o.allow & ~bit, deny: o.deny & ~bit };
-          if (st === 'allow') n.allow |= bit;
-          if (st === 'deny') n.deny |= bit;
-          model.set(role.id, n); draw();
-        };
-        const b = (st, txt, title) => el('button', { type: 'button', class: `ov-btn ${st}` + (state === st ? ' on' : ''), title, disabled: !can, onclick: () => set(st) }, txt);
-        return el('div', { class: 'ov-row' }, el('div', {}, label, hint ? el('div', { class: 'muted small' }, hint) : null),
-          el('div', { class: 'ov-tri' }, b('deny', '✕', 'Deny'), b('inherit', '/', 'Use the role’s normal setting'), b('allow', '✓', 'Allow')));
-      }),
-      role.isDefault ? null : el('button', { type: 'button', class: 'btn small', disabled: !can, onclick: () => { model.set(role.id, { allow: 0, deny: 0 }); if (!original.has(role.id)) model.delete(role.id); selected = everyone.id; draw(); } }, 'Remove this role’s overrides'));
+    sentence();
+    const keys = [...model.keys()].filter((k) => targetOf(k))
+      .sort((a, b) => { const A = targetOf(a); const B = targetOf(b); return A.id === everyone.id ? -1 : B.id === everyone.id ? 1 : A.kind !== B.kind ? (A.kind === 'role' ? -1 : 1) : B.position - A.position; });
+    list.replaceChildren(...keys.map(row).filter(Boolean));
+    const roles = s.roles.filter((r) => !r.isDefault && !model.has(`role:${r.id}`)).sort((a, b) => b.position - a.position);
+    const people = s.members.filter((m) => !model.has(`member:${m.user.id}`)).sort((a, b) => (a.nickname || a.user.displayName).localeCompare(b.nickname || b.user.displayName));
+    adder.replaceChildren(el('option', { value: '' }, '+ Add a role or person…'),
+      roles.length ? el('optgroup', { label: 'Roles' }, roles.map((r) => el('option', { value: `role:${r.id}` }, r.name))) : null,
+      people.length ? el('optgroup', { label: 'People' }, people.slice(0, 200).map((m) => el('option', { value: `member:${m.user.id}` }, `${m.nickname || m.user.displayName} (@${handleOf(m.user)})`))) : null);
   }
+  adder.onchange = () => {
+    if (!adder.value) return;
+    model.set(adder.value, { ...levels.find((l) => l.key === (voice ? 'talk' : 'chat')) });
+    delete model.get(adder.value).key; draw();
+  };
   draw();
   const node = el('div', { class: 'ov' },
-    el('div', { class: 'ov-title' }, 'Permissions'),
-    el('label', { class: 'check' }, isPrivate, 'Private channel: only roles you allow below can see it'),
-    el('div', { class: 'ov-body' }, el('div', { class: 'ov-side' }, roleList, adder), grid),
-    el('p', { class: 'muted small', style: { margin: 0 } }, 'Deny beats the role’s normal setting; Allow on a role beats a Deny on @everyone. Owners and Administrators always have access.'));
+    el('div', { class: 'ov-title' }, 'Who can use this channel'),
+    summary,
+    el('label', { class: 'check' }, isPrivate, 'Private: hidden from everyone except the roles and people you add below'),
+    list, adder,
+    el('p', { class: 'muted small', style: { margin: 0 } }, 'Someone with several roles gets the most generous setting among them; a setting for a specific person beats their roles. Owners and Administrators always have full access.'));
   async function apply(channelId) {
-    for (const [id, o] of model) {
-      const was = original.get(id) || { allow: 0, deny: 0 };
-      if (was.allow === o.allow && was.deny === o.deny) continue;
-      const r = s.roles.find((x) => x.id === id);
-      if (!r || !editable(r)) continue;
-      await api('PUT', `/channels/${channelId}/overrides/role/${id}`, { allow: o.allow, deny: o.deny });
+    for (const [k, o] of model) {
+      const was = original.get(k) || { allow: 0, deny: 0 };
+      if (was.allow === (o.allow | 0) && was.deny === (o.deny | 0)) continue;
+      const t = targetOf(k);
+      if (!t || !t.editable) continue;
+      await api('PUT', `/channels/${channelId}/overrides/${t.kind}/${t.id}`, { allow: o.allow | 0, deny: o.deny | 0 });
     }
   }
   return { node, apply };
 }
 
-// Who can see a channel, in a few words.
+// Who can use a channel, as one line ("Everyone: Read only · Mods: Moderate").
 function accessSummary(s, c) {
+  const levels = accessLevels(c.type, s);
   const everyone = s.roles.find((r) => r.isDefault);
-  const ov = (id) => (c.overrides || []).find((o) => o.type === 'role' && o.id === id) || { allow: 0, deny: 0 };
-  const priv = ov(everyone.id).deny & P.VIEW_CHANNELS;
-  const parts = [];
-  if (priv) {
-    const who = s.roles.filter((r) => !r.isDefault && ov(r.id).allow & P.VIEW_CHANNELS).map((r) => r.name);
-    parts.push(who.length ? `Private: ${who.join(', ')}` : 'Private: owner & admins only');
-  } else if (!(everyone.permissions & P.VIEW_CHANNELS)) parts.push('Only roles with View channels');
-  else parts.push('Everyone');
-  if (c.type === 'text' && ov(everyone.id).deny & P.SEND_MESSAGES) parts.push('read-only');
-  if (c.ageRating) parts.push(`${c.ageRating}+`);
-  return parts.join(' · ');
+  const parts = (c.overrides || []).map((o) => {
+    const name = o.type === 'role' ? (o.id === everyone.id ? 'Everyone' : (s.roles.find((r) => r.id === o.id) || {}).name) : (() => { const m = s.members.find((x) => x.user.id === o.id); return m ? (m.nickname || m.user.displayName) : null; })();
+    if (!name) return null;
+    const l = levelOf(levels, o);
+    return { name, label: l ? l.label : 'Custom', everyone: o.type === 'role' && o.id === everyone.id };
+  }).filter(Boolean).sort((a, b) => (a.everyone ? -1 : b.everyone ? 1 : 0));
+  const out = parts.map((p) => `${p.name}: ${p.label}`);
+  if (!parts.some((p) => p.everyone)) out.unshift('Everyone: Default');
+  if (c.ageRating) out.push(`${c.ageRating}+`);
+  return out.join(' · ');
 }
 
 // After an import: go through the hidden channels and open them up.
@@ -3180,6 +3329,75 @@ function usernameModal() {
     el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => dlg.close() }, waiting ? 'Close' : 'Cancel'),
       waiting ? null : el('button', { class: 'btn primary', onclick: save }, 'Change username')),
   ]);
+}
+
+
+// ---------------------------------------------------------------- View as
+// See the server exactly as a person (or anyone with some roles) would, and
+// why each channel is the way it is. Uses the same rules as enforcement.
+const VIEW_AS = { userId: null };
+function effectiveLevel(c, perms) {
+  if (!(perms & P.VIEW_CHANNELS)) return { key: 'hidden', label: 'Hidden', icon: '\u{1F6AB}' };
+  if (c.type === 'voice') {
+    if (!(perms & P.CONNECT)) return { key: 'see', label: 'Can see, can’t join', icon: '\u{1F441}' };
+    if (!(perms & P.SPEAK)) return { key: 'listen', label: 'Listen only', icon: '\u{1F442}' };
+    return perms & P.MANAGE_CHANNELS ? { key: 'manage', label: 'Talk + manage', icon: '⚙' } : { key: 'talk', label: perms & P.VIDEO ? 'Talk + video' : 'Talk', icon: '\u{1F399}' };
+  }
+  if (!(perms & P.SEND_MESSAGES)) return { key: 'read', label: 'Read only', icon: '\u{1F441}' };
+  if (perms & P.MANAGE_CHANNELS) return { key: 'manage', label: 'Manage', icon: '⚙' };
+  if (perms & P.MANAGE_MESSAGES) return { key: 'moderate', label: 'Moderate', icon: '\u{1F6E1}' };
+  return { key: 'chat', label: 'Chat', icon: '\u{1F4AC}' };
+}
+
+function viewAsTab(s) {
+  const wrap = el('div', { style: { display: 'grid', gap: '12px' } });
+  const result = el('div');
+  const mode = el('select', {}, el('option', { value: 'member' }, 'A person'), el('option', { value: 'roles' }, 'Someone with these roles'));
+  const who = el('select', {}, s.members.slice().sort((a, b) => (a.nickname || a.user.displayName).localeCompare(b.nickname || b.user.displayName))
+    .map((m) => el('option', { value: m.user.id, selected: VIEW_AS.userId === m.user.id }, `${m.nickname || m.user.displayName} (@${handleOf(m.user)})`)));
+  const roleBoxes = el('div', { class: 'perm-grid', style: { display: 'none' } }, s.roles.filter((r) => !r.isDefault).sort((a, b) => b.position - a.position)
+    .map((r) => el('label', {}, el('input', { type: 'checkbox', value: r.id, onchange: () => run() }), r.name)));
+  VIEW_AS.userId = null;
+  mode.onchange = () => { who.style.display = mode.value === 'member' ? '' : 'none'; roleBoxes.style.display = mode.value === 'roles' ? 'grid' : 'none'; run(); };
+  who.onchange = () => run();
+  async function run() {
+    result.replaceChildren(el('p', { class: 'muted' }, 'Checking…'));
+    try {
+      const q = mode.value === 'member' ? `userId=${encodeURIComponent(who.value)}`
+        : `roles=${[...roleBoxes.querySelectorAll('input:checked')].map((i) => i.value).join(',')}`;
+      const r = await api('GET', `/servers/${s.id}/preview?${q}`);
+      const byId = new Map(r.channels.map((c) => [c.id, c]));
+      const chans = s.channels.filter((c) => byId.has(c.id));
+      const line = (c) => {
+        const pv = byId.get(c.id);
+        const lv = effectiveLevel(c, pv.perms);
+        const keys = c.type === 'voice' ? [['view', 'See it'], ['connect', 'Join'], ['speak', 'Speak'], ['video', 'Camera / screen']] : [['view', 'See it'], ['send', 'Post'], ['manageMessages', 'Delete others’ messages']];
+        const why = el('div', { class: 'why hidden' }, keys.map(([k, label]) => {
+          const bit = { view: P.VIEW_CHANNELS, send: P.SEND_MESSAGES, connect: P.CONNECT, speak: P.SPEAK, video: P.VIDEO, manageMessages: P.MANAGE_MESSAGES }[k];
+          return el('div', {}, el('span', { class: pv.perms & bit ? 'yes' : 'no' }, pv.perms & bit ? '✔' : '✖'), ` ${label}: `, el('span', { class: 'muted' }, pv.reasons[k] || ''));
+        }), pv.ageRating ? el('div', { class: 'muted small' }, `Also ${pv.ageRating}+ only: they need a birth date showing they’re old enough.`) : null);
+        return el('div', { class: 'va-row', onclick: () => why.classList.toggle('hidden') },
+          el('div', { class: 'va-main' }, el('span', {}, (c.type === 'voice' ? '\u{1F50A} ' : '# ') + c.name), el('span', { class: `va-level lv-${lv.key}` }, `${lv.icon} ${lv.label}`), el('span', { class: 'muted small' }, 'Why?')), why);
+      };
+      const cats = chans.filter((c) => c.type === 'category');
+      const groups = [];
+      const loose = chans.filter((c) => c.type !== 'category' && !c.parentId);
+      if (loose.length) groups.push(el('div', { class: 'wiz-cat' }, ...loose.map(line)));
+      for (const cat of cats) {
+        const kids = chans.filter((c) => c.parentId === cat.id);
+        if (kids.length) groups.push(el('div', { class: 'wiz-cat' }, el('div', { class: 'wiz-cat-name' }, cat.name), ...kids.map(line)));
+      }
+      result.replaceChildren(
+        el('p', { class: 'acc-summary' }, r.owner ? 'They own this server, so they can do everything.' : roleSentence(r.serverPerms, false).replace('People with this role can also', 'Across the server they can').replace('People with this role get', 'They get'),
+          r.timedOut ? ' They’re timed out right now.' : ''),
+        el('div', { class: 'va-list' }, ...groups),
+        el('p', { class: 'muted small', style: { margin: 0 } }, 'Tap a channel to see why. Only channels you can see yourself are listed.'));
+    } catch (e) { result.replaceChildren(el('p', { class: 'error' }, e.message)); }
+  }
+  wrap.append(el('p', { class: 'muted small', style: { margin: 0 } }, 'See the server the way someone else would, to check your setup.'),
+    el('div', { class: 'row', style: { justifyContent: 'flex-start', margin: 0, flexWrap: 'wrap' } }, mode, who), roleBoxes, result);
+  run();
+  return wrap;
 }
 
 boot();

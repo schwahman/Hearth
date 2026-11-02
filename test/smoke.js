@@ -752,6 +752,39 @@ async function main() {
   assert.equal((await req('DELETE', '/users/@me/google', { password: 'never verified phrase 4' }, UV)).data.google, null);
   ok('Google links to an existing account only when both sides verified the email; link and unlink in settings');
 
+  // ---------------- View as / Why, saved access levels ----------------
+  const jnId = (await req('GET', '/users/@me', null, JN)).data.id;
+  assert.equal((await req('GET', `/servers/${done.serverId}/preview?userId=${jnId}`, null, JN)).status, 403);
+  let vw = (await req('GET', `/servers/${done.serverId}/preview?userId=${jnId}`, null, IM)).data;
+  const vwc = (id) => vw.channels.find((c) => c.id === id);
+  assert.equal(vwc(byName.staff.id).perms & P_.VIEW_CHANNELS, 0);
+  assert.match(vwc(byName.staff.id).reasons.view, /blocked in this channel for @everyone/);
+  assert.match(vwc(byName.rules.id).reasons.send, /blocked in this channel for @everyone/);
+  assert.equal((await req('GET', `/channels/${byName.staff.id}/messages`, null, JN)).status, 404); // matches the preview
+  await req('PUT', `/servers/${done.serverId}/members/${jnId}/roles/${mods.id}`, null, IM);
+  vw = (await req('GET', `/servers/${done.serverId}/preview?userId=${jnId}`, null, IM)).data;
+  assert.ok(vwc(byName.staff.id).perms & P_.VIEW_CHANNELS);
+  assert.match(vwc(byName.staff.id).reasons.view, /allowed in this channel for their role Mods/);
+  assert.equal((await req('GET', `/channels/${byName.staff.id}/messages`, null, JN)).status, 200);
+  // A setting for one person beats their roles.
+  await req('PUT', `/channels/${byName.staff.id}/overrides/member/${jnId}`, { allow: 0, deny: P_.VIEW_CHANNELS }, IM);
+  vw = (await req('GET', `/servers/${done.serverId}/preview?userId=${jnId}`, null, IM)).data;
+  assert.match(vwc(byName.staff.id).reasons.view, /blocked in this channel for them personally/);
+  assert.equal((await req('GET', `/channels/${byName.staff.id}/messages`, null, JN)).status, 404);
+  // Preview by roles (no specific person).
+  vw = (await req('GET', `/servers/${done.serverId}/preview?roles=${mods.id}`, null, IM)).data;
+  assert.ok(vwc(byName.staff.id).perms & P_.VIEW_CHANNELS);
+  ok('View as shows exactly what someone can access, with the reason for each channel');
+
+  assert.equal((await req('POST', `/servers/${done.serverId}/presets`, { name: 'Announcer', kind: 'text', allow: 3, deny: 0 }, JN)).status, 403);
+  const pre = (await req('POST', `/servers/${done.serverId}/presets`, { name: 'Announcer', kind: 'text', allow: P_.VIEW_CHANNELS | P_.SEND_MESSAGES, deny: 0 }, IM)).data;
+  assert.equal(pre.name, 'Announcer');
+  assert.ok((await req('GET', `/servers/${done.serverId}`, null, IM)).data.presets.some((x) => x.id === pre.id));
+  assert.equal((await req('PATCH', `/presets/${pre.id}`, { name: 'Speaker' }, IM)).data.name, 'Speaker');
+  await req('DELETE', `/presets/${pre.id}`, null, IM);
+  assert.equal((await req('GET', `/servers/${done.serverId}`, null, IM)).data.presets.length, 0);
+  ok('servers can save their own access levels to reuse on any channel');
+
   cu.ws.close();
   ca.ws.close(); cb.ws.close();
   console.log(`\nAll ${passed} checks passed.`);

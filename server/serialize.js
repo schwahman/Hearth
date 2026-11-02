@@ -73,6 +73,7 @@ function server(serverId, viewerId) {
     id: s.id, name: s.name, ownerId: s.owner_id, icon: s.icon || null,
     channels: rows.map((r) => (locked.has(r.id) ? { ...channel(r), locked: true } : channel(r))),
     ageRating: s.age_rating || 0, systemChannelId: s.system_channel_id || null,
+    presets: all('SELECT id, name, kind, allow, deny FROM access_presets WHERE server_id = ? ORDER BY name', serverId),
     roles: all('SELECT * FROM roles WHERE server_id = ? ORDER BY position DESC', serverId).map(role),
     members,
     voiceStates: state.voiceStatesForServer(serverId).filter((v) => visible.has(v.channelId)),

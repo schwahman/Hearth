@@ -1268,6 +1268,57 @@ route('PUT', '/api/channels/:id/overrides/:type/:targetId', ({ user, params, bod
   return ser.channel(one('SELECT * FROM channels WHERE id = ?', channel.id));
 });
 
+// ---------- "View as" and saved access levels ----------
+route('GET', '/api/servers/:id/preview', ({ user, params, query }) => {
+  const perms = requireServerPerm(params.id, user.id);
+  if (!has(perms, P.MANAGE_ROLES) && !has(perms, P.MANAGE_CHANNELS)) throw new HttpError(403, 'You need Manage roles or Manage channels to use View as.');
+  const { preview } = require('./permissions');
+  const r = query.get('userId')
+    ? preview(params.id, { userId: String(query.get('userId')) })
+    : preview(params.id, { roleIds: String(query.get('roles') || '').split(',').filter(Boolean) });
+  if (!r) throw new HttpError(404, 'That person isn\u2019t in this server.');
+  // Only report on channels the person asking can see themselves.
+  r.channels = r.channels.filter((c) => has(channelPermissions(one('SELECT * FROM channels WHERE id = ?', c.id), user.id), P.VIEW_CHANNELS));
+  return r;
+});
+
+function presetBody(body, actorPerms) {
+  const name = str(body.name, 'Name', 1, 32);
+  const kind = body.kind === 'voice' ? 'voice' : 'text';
+  const allow = cleanPerms(body.allow || 0, actorPerms) & ~P.ADMINISTRATOR;
+  const deny = (Number(body.deny) | 0) & ALL & ~P.ADMINISTRATOR & ~allow;
+  return { name, kind, allow, deny };
+}
+route('POST', '/api/servers/:id/presets', ({ user, params, body }) => {
+  const perms = requireServerPerm(params.id, user.id, P.MANAGE_ROLES);
+  if (one('SELECT COUNT(*) AS n FROM access_presets WHERE server_id = ?', params.id).n >= 50) throw new HttpError(400, 'A server can have up to 50 saved access levels.');
+  const p = presetBody(body, perms);
+  const id = newId();
+  run('INSERT INTO access_presets (id, server_id, name, kind, allow, deny, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, params.id, p.name, p.kind, p.allow, p.deny, Date.now());
+  audit(params.id, user.id, 'preset.create', { type: 'preset', id, name: p.name });
+  bus.publish(`server:${params.id}`, { t: 'SERVER_REFRESH', d: { id: params.id } });
+  return { id, ...p };
+});
+route('PATCH', '/api/presets/:id', ({ user, params, body }) => {
+  const row = one('SELECT * FROM access_presets WHERE id = ?', params.id);
+  if (!row) throw new HttpError(404, 'Not found.');
+  const perms = requireServerPerm(row.server_id, user.id, P.MANAGE_ROLES);
+  const p = presetBody({ ...row, ...body }, perms);
+  run('UPDATE access_presets SET name = ?, kind = ?, allow = ?, deny = ? WHERE id = ?', p.name, p.kind, p.allow, p.deny, row.id);
+  audit(row.server_id, user.id, 'preset.update', { type: 'preset', id: row.id, name: p.name });
+  bus.publish(`server:${row.server_id}`, { t: 'SERVER_REFRESH', d: { id: row.server_id } });
+  return { id: row.id, ...p };
+});
+route('DELETE', '/api/presets/:id', ({ user, params }) => {
+  const row = one('SELECT * FROM access_presets WHERE id = ?', params.id);
+  if (!row) throw new HttpError(404, 'Not found.');
+  requireServerPerm(row.server_id, user.id, P.MANAGE_ROLES);
+  // Channels that used it keep their permissions; only the saved name goes.
+  run('DELETE FROM access_presets WHERE id = ?', row.id);
+  audit(row.server_id, user.id, 'preset.delete', { type: 'preset', id: row.id, name: row.name });
+  bus.publish(`server:${row.server_id}`, { t: 'SERVER_REFRESH', d: { id: row.server_id } });
+});
+
 // ---------- slash command helpers ----------
 // Dice and coin results are decided by the server so nobody can fake them.
 function postSystemMessage(channel, userId, kind, content) {
